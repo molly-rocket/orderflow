@@ -1,0 +1,78 @@
+// Inter-service market data contract, schema version 1.
+//
+// Versioning rule (ADR-0002): the schema version is the protobuf package
+// (`orderflow.v1`) and the second token of every NATS subject (`of.v1.*`).
+// Within v1, changes must be wire-compatible: add fields with new tags, never
+// renumber, retype or reuse a tag. A breaking change ships as `orderflow.v2`
+// on `of.v2.*` subjects, published alongside v1 until every consumer migrates.
+//
+// Vocabulary follows GLOSSARY.md: Market, Trade, Taker, Gap.
+
+syntax = "proto3";
+
+package orderflow.v1;
+
+// An exact decimal: value = mantissa * 10^(-scale).
+// Prices and sizes never travel as floats; Footprint sums must be exact.
+message Decimal {
+  sint64 mantissa = 1;
+  uint32 scale = 2;
+}
+
+enum TakerSide {
+  TAKER_SIDE_UNSPECIFIED = 0;
+  TAKER_SIDE_BUY = 1;
+  TAKER_SIDE_SELL = 2;
+}
+
+// One Trade, normalized. The Market is carried by the enclosing batch.
+message Trade {
+  // Venue-assigned id, unique and increasing within one Market.
+  // For Binance perp this is the aggregate trade id.
+  uint64 venue_trade_id = 1;
+  // Venue matching-engine time, microseconds since the Unix epoch.
+  int64 engine_time_us = 2;
+  Decimal price = 3;
+  Decimal size = 4;
+  TakerSide taker_side = 5;
+  // The aggressive order's Venue id, when the Venue exposes one (Bubbles group by it).
+  optional string taker_order_id = 6;
+}
+
+// All Trades decoded from one Venue message for one Market, in Venue order.
+// Batching keeps NATS message count proportional to Venue messages, not fills.
+message TradeBatch {
+  // Market id, `venue:type:native-name` (e.g. `binance:perp:BTCUSDT`).
+  string market = 1;
+  repeated Trade trades = 2;
+}
+
+enum GapReason {
+  GAP_REASON_UNSPECIFIED = 0;
+  // The Venue connection dropped or was closed (including planned reconnects).
+  GAP_REASON_DISCONNECT = 1;
+  // A Venue sequence number jumped: messages were lost in transit.
+  GAP_REASON_SEQUENCE_BREAK = 2;
+  // The local order book was discarded and rebuilt from a snapshot.
+  GAP_REASON_BOOK_RESYNC = 3;
+  // The recording process itself was down (detected at startup).
+  GAP_REASON_RECORDER_DOWNTIME = 4;
+  // Storage was down longer than JetStream retention; recorded data was lost.
+  GAP_REASON_STORAGE_OUTAGE = 5;
+}
+
+// A Gap begins: from `start_time_us` the Market's stream is not observed.
+message GapOpened {
+  // Unique per Gap; pairs this message with its GapClosed.
+  string gap_id = 1;
+  string market = 2;
+  int64 start_time_us = 3;
+  GapReason reason = 4;
+}
+
+// A Gap ends: from `end_time_us` the Market's stream is observed again.
+message GapClosed {
+  string gap_id = 1;
+  string market = 2;
+  int64 end_time_us = 3;
+}
