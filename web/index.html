@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Orderflow</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='2' y='3' width='5' height='10' fill='%23c8323c'/%3E%3Crect x='9' y='1' width='5' height='12' fill='%230f8a5f'/%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <header class="toolbar">
+      <span class="brand">Orderflow</span>
+      <label>Market <select id="market"></select></label>
+      <label>Timeframe <select id="timeframe"></select></label>
+      <label>Price Grouping <select id="grouping"></select></label>
+      <label>Imbalance
+        <select id="ratio">
+          <option value="1.5">150%</option>
+          <option value="2">200%</option>
+          <option value="2.5">250%</option>
+          <option value="3">300%</option>
+          <option value="4">400%</option>
+          <option value="5">500%</option>
+        </select>
+      </label>
+      <span id="status" class="status" role="status">Connecting…</span>
+    </header>
+    <main class="chart">
+      <canvas id="chart" aria-label="Footprint chart"></canvas>
+      <p id="notice" class="notice" hidden></p>
+    </main>
+    <footer class="legend">
+      <span><i class="swatch sell"></i>Taker sell</span>
+      <span><i class="swatch buy"></i>Taker buy</span>
+      <span><i class="swatch outline"></i>Imbalance</span>
+      <span><i class="swatch stack"></i>Stacked Imbalance</span>
+      <span><i class="swatch gap"></i>Gap: no data (unknown, not zero)</span>
+      <span class="hint">Drag to pan · wheel: time · Ctrl+wheel: rows · Shift+wheel: bar width · double-click: follow live</span>
+    </footer>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
