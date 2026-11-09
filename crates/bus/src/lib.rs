@@ -5,7 +5,6 @@ use async_nats::jetstream::{self, kv, stream};
 use orderflow_contracts::record::{Record, RecordError};
 use orderflow_contracts::subjects::{self, Namespace};
 
-
 pub const RECORD_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
 
 pub const DEDUPE_WINDOW: Duration = Duration::from_secs(120);

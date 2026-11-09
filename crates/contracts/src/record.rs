@@ -6,7 +6,10 @@ use crate::v1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Record {
-    Trades { market: Market, trades: Vec<Trade> },
+    Trades {
+        market: Market,
+        trades: Vec<Trade>,
+    },
     GapOpened {
         gap_id: String,
         market: Market,

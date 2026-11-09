@@ -24,7 +24,10 @@ pub enum Fault {
         after_frames: usize,
         lost_frames: usize,
     },
-    Drop { at_frame: usize, count: usize },
+    Drop {
+        at_frame: usize,
+        count: usize,
+    },
 }
 
 #[derive(Debug, Clone)]

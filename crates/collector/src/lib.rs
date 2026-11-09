@@ -52,7 +52,6 @@ impl Config {
     }
 }
 
-
 pub async fn run<S: Sink, C: Checkpoints>(
     config: &Config,
     sink: &mut S,

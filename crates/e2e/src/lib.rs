@@ -134,7 +134,6 @@ impl Stack {
         })
     }
 
-
     pub async fn get_response(&self, path_and_query: &str) -> reqwest::Response {
         self.http
             .get(format!("{}{path_and_query}", self.gateway_url))
@@ -143,13 +142,11 @@ impl Stack {
             .expect("gateway request")
     }
 
-
     pub async fn get(&self, path_and_query: &str) -> (u16, Value) {
         let response = self.get_response(path_and_query).await;
         let status = response.status().as_u16();
         (status, response.json().await.expect("gateway returns JSON"))
     }
-
 
     pub async fn footprint(&self, from_us: i64, to_us: i64, query: &str) -> Value {
         let (status, body) = self
@@ -160,7 +157,6 @@ impl Stack {
         assert_eq!(status, 200, "{body}");
         body
     }
-
 
     pub async fn wait_for_trades(&self, from_us: i64, to_us: i64, trades: u64) {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);

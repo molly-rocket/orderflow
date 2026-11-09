@@ -44,7 +44,6 @@ where
     }
 }
 
-
 #[derive(Debug)]
 pub struct Retry<'a> {
     backoff: Backoff,

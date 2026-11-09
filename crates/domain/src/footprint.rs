@@ -98,11 +98,9 @@ impl FootprintBar {
         })
     }
 
-
     pub fn volume_at(&self, row: PriceRow) -> RowVolume {
         self.rows.get(&row).copied().unwrap_or_default()
     }
-
 
     pub fn row_span(&self) -> Option<(PriceRow, PriceRow)> {
         Some((*self.rows.keys().next()?, *self.rows.keys().next_back()?))
@@ -139,7 +137,6 @@ impl FootprintBar {
         Ok(out)
     }
 }
-
 
 pub fn footprint_bars(
     trades: &[Trade],

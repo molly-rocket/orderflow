@@ -38,7 +38,6 @@ impl MarketType {
     }
 }
 
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Market {
     venue: Venue,

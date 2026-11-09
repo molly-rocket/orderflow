@@ -40,8 +40,8 @@ fn taker_volume_is_bucketed_into_rows_by_price_grouping() {
     let t = MINUTE_START;
     for trade in [
         buy(t, "100.0", "1.5"),
-        buy(t + 1, "100.4", "0.5"),   
-        sell(t + 2, "100.2", "3"),    
+        buy(t + 1, "100.4", "0.5"),
+        sell(t + 2, "100.2", "3"),
         sell(t + 3, "100.5", "0.25"),
         buy(t + 4, "99.9", "2"),
     ] {

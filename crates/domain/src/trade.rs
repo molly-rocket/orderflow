@@ -17,7 +17,6 @@ impl TakerSide {
     }
 }
 
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Trade {
     pub venue_trade_id: u64,

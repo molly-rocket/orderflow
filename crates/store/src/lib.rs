@@ -96,7 +96,6 @@ impl WriteBatch {
     }
 }
 
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LatestTrade {
     pub market: Market,

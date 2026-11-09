@@ -12,7 +12,7 @@ fn range(start: i64, end: i64) -> TimeRange {
 fn a_closed_gap_overlaps_ranges_that_share_any_instant_with_it() {
     let gap = Gap::closed(t(100), t(200), GapReason::Disconnect).unwrap();
     let cases = [
-        ((0, 100), false),   
+        ((0, 100), false),
         ((0, 101), true),
         ((150, 160), true),
         ((50, 250), true),

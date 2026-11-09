@@ -380,7 +380,6 @@ fn dec(s: &str) -> Result<Decimal> {
     s.parse().with_context(|| format!("not a decimal: {s:?}"))
 }
 
-
 #[derive(Debug)]
 struct Checker<'a> {
     gateway: &'a str,
