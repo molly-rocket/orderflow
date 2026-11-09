@@ -1,0 +1,18 @@
+[package]
+name = "orderflow-domain"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Pure domain rules for orderflow: Markets, Trades, Footprint, Imbalance, Gaps. No I/O."
+
+[dependencies]
+rust_decimal.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest = "1"
+
+[lints]
+workspace = true
