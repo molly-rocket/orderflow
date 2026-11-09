@@ -1,0 +1,32 @@
+[package]
+name = "orderflow-writer"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The only JetStream consumer: writes recorded Trades and Gaps to ClickHouse, exactly once."
+
+[dependencies]
+anyhow.workspace = true
+async-nats.workspace = true
+clap.workspace = true
+futures-util.workspace = true
+orderflow-bus.workspace = true
+orderflow-contracts.workspace = true
+orderflow-domain.workspace = true
+orderflow-runtime.workspace = true
+orderflow-store.workspace = true
+prost.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+orderflow-collector.workspace = true
+orderflow-runtime.workspace = true
+venue-sim.workspace = true
+prost.workspace = true
+
+[lints]
+workspace = true
