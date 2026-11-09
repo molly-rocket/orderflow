@@ -1,0 +1,32 @@
+[package]
+name = "orderflow-collector"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Connects to Venues, normalizes Trades, records Gaps, publishes to NATS."
+
+[dependencies]
+anyhow.workspace = true
+async-nats.workspace = true
+clap.workspace = true
+futures-util.workspace = true
+orderflow-bus.workspace = true
+orderflow-contracts.workspace = true
+orderflow-domain.workspace = true
+orderflow-runtime.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+venue-sim.workspace = true
+
+[lints]
+workspace = true
