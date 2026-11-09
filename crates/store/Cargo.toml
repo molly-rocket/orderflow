@@ -1,0 +1,22 @@
+[package]
+name = "orderflow-store"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "ClickHouse storage: schema migrations, Trade/Gap inserts, Footprint/Gap/horizon queries."
+
+[dependencies]
+anyhow.workspace = true
+clickhouse = { version = "0.15", features = ["lz4"] }
+orderflow-domain.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+
+[lints]
+workspace = true
