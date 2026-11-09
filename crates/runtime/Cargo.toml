@@ -1,0 +1,17 @@
+[package]
+name = "orderflow-runtime"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Process plumbing shared by every service: logging, shutdown on signals, retry with backoff."
+
+[dependencies]
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true
