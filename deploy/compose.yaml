@@ -1,0 +1,99 @@
+name: orderflow
+
+x-clickhouse: &clickhouse
+  image: clickhouse/clickhouse-server:25.8
+  environment:
+    CLICKHOUSE_DB: orderflow
+    CLICKHOUSE_USER: orderflow
+    CLICKHOUSE_PASSWORD: orderflow
+    CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+  ulimits:
+    nofile: { soft: 262144, hard: 262144 }
+  healthcheck:
+    test: ["CMD-SHELL", "wget -q -O - http://$$(hostname -i):8123/ping"]
+    interval: 2s
+    timeout: 2s
+    retries: 60
+
+x-service: &service
+  image: orderflow-services:local
+  pull_policy: never
+  profiles: ["live"]
+  restart: unless-stopped
+  stop_grace_period: 30s
+  logging:
+    driver: json-file
+    options: { max-size: "20m", max-file: "10" }
+
+x-service-env: &service-env
+  NATS_URL: nats://nats:4222
+  NAMESPACE: of
+  RUST_LOG: info
+
+x-storage-env: &storage-env
+  CLICKHOUSE_URL: http://clickhouse:8123
+  CLICKHOUSE_DATABASE: orderflow
+  CLICKHOUSE_USER: orderflow
+  CLICKHOUSE_PASSWORD: orderflow
+
+services:
+  nats:
+    image: nats:2.11.9-alpine
+    command: ["--jetstream", "--store_dir=/data", "--http_port=8222"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    volumes:
+      - nats-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8222/healthz?js-enabled-only=true"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  clickhouse:
+    <<: *clickhouse
+    ports:
+      - "8123:8123"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+
+  clickhouse-chaos:
+    <<: *clickhouse
+    profiles: ["chaos"]
+    ports:
+      - "18123:8123"
+
+  collector:
+    <<: *service
+    command: ["orderflow-collector"]
+    environment:
+      <<: *service-env
+    depends_on:
+      nats: { condition: service_healthy }
+
+  writer:
+    <<: *service
+    command: ["orderflow-writer"]
+    environment:
+      <<: [*service-env, *storage-env]
+    depends_on:
+      nats: { condition: service_healthy }
+      clickhouse: { condition: service_healthy }
+
+  gateway:
+    <<: *service
+    command: ["orderflow-gateway"]
+    environment:
+      <<: [*service-env, *storage-env]
+      LISTEN: 0.0.0.0:8080
+      WEB_DIR: /app/web
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      nats: { condition: service_healthy }
+      clickhouse: { condition: service_healthy }
+
+volumes:
+  nats-data:
+  clickhouse-data:

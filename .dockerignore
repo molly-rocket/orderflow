@@ -1,0 +1,9 @@
+# Build context for deploy/Dockerfile: sources only.
+.git
+.scratch
+target
+**/node_modules
+web/dist
+web/test-results
+web/playwright-report
+*.log
