@@ -1,0 +1,7 @@
+/target
+**/node_modules
+/web/dist
+*.log
+/web/test-results
+/web/playwright-report
+/.scratch

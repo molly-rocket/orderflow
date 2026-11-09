@@ -1,0 +1,2 @@
+# Product names used throughout docs; `..` keeps clippy's default list.
+doc-valid-idents = ["ClickHouse", "JetStream", "Hyperliquid", "WebSocket", "VWAP", ".."]
