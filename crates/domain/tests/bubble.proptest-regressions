@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 04b5ee9de6d4b1aff100e77b064554a5a37a2ab13443c7d4a588464bf5b29fba # shrinks to trades = [Trade { venue_trade_id: 1, engine_time: Timestamp(0), price: 10000.1, size: 0.001, taker_side: Buy, taker_order_id: None }, Trade { venue_trade_id: 2, engine_time: Timestamp(100000), price: 10000.1, size: 0.001, taker_side: Buy, taker_order_id: None }]

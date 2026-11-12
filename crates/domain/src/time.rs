@@ -18,6 +18,12 @@ impl Timestamp {
     pub const fn as_micros(self) -> i64 {
         self.0
     }
+
+    #[must_use]
+    pub const fn trading_day_start(self) -> Self {
+        let day = SECS_PER_DAY as i64 * MICROS_PER_SEC;
+        Self(self.0.div_euclid(day) * day)
+    }
 }
 
 impl fmt::Display for Timestamp {

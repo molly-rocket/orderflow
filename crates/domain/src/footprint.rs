@@ -21,6 +21,31 @@ pub struct RowVolume {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ohlc {
+    pub open: Decimal,
+    pub high: Decimal,
+    pub low: Decimal,
+    pub close: Decimal,
+}
+
+impl Ohlc {
+    fn at(price: Decimal) -> Self {
+        Self {
+            open: price,
+            high: price,
+            low: price,
+            close: price,
+        }
+    }
+
+    fn extend(&mut self, price: Decimal) {
+        self.high = self.high.max(price);
+        self.low = self.low.min(price);
+        self.close = price;
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FootprintRow {
     pub row: PriceRow,
     pub low: Decimal,
@@ -34,6 +59,7 @@ pub struct FootprintBar {
     grouping: PriceGrouping,
     rows: BTreeMap<PriceRow, RowVolume>,
     trade_count: u64,
+    ohlc: Option<Ohlc>,
 }
 
 impl FootprintBar {
@@ -43,6 +69,7 @@ impl FootprintBar {
             grouping,
             rows: BTreeMap::new(),
             trade_count: 0,
+            ohlc: None,
         }
     }
 
@@ -64,6 +91,18 @@ impl FootprintBar {
             TakerSide::Sell => volume.sell += trade.size,
         }
         self.trade_count += 1;
+        match &mut self.ohlc {
+            Some(ohlc) => ohlc.extend(trade.price),
+            None => self.ohlc = Some(Ohlc::at(trade.price)),
+        }
+    }
+
+    pub const fn ohlc(&self) -> Option<Ohlc> {
+        self.ohlc
+    }
+
+    pub const fn set_ohlc(&mut self, ohlc: Ohlc) {
+        self.ohlc = Some(ohlc);
     }
 
     pub fn add_row_volume(&mut self, row: PriceRow, volume: RowVolume, trade_count: u64) {
@@ -134,6 +173,7 @@ impl FootprintBar {
             out.add_row_volume(self.grouping.coarsen_row(row, &coarser), volume, 0);
         }
         out.trade_count = self.trade_count;
+        out.ohlc = self.ohlc;
         Ok(out)
     }
 }

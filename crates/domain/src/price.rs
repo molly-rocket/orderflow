@@ -92,11 +92,12 @@ impl PriceGrouping {
     }
 
     pub fn row_of(&self, price: Decimal) -> PriceRow {
-        let index = (price / self.step)
-            .floor()
-            .to_i64()
-            .expect("price row index fits in i64");
-        PriceRow(index)
+        let index = (price / self.step).floor();
+        PriceRow(index.to_i64().unwrap_or(if index.is_sign_negative() {
+            i64::MIN
+        } else {
+            i64::MAX
+        }))
     }
 
     pub fn row_low(&self, row: PriceRow) -> Decimal {

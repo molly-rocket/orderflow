@@ -1,4 +1,4 @@
-use orderflow_domain::{Market, MarketIdError, MarketType, Venue};
+use orderflow_domain::{Decimal, Market, MarketIdError, MarketSpec, MarketType, Venue};
 
 #[test]
 fn parses_and_formats_a_market_id() {
@@ -48,4 +48,14 @@ fn rejects_malformed_market_ids() {
     for (id, expected) in cases {
         assert_eq!(id.parse::<Market>(), Err(expected), "input {id:?}");
     }
+}
+
+#[test]
+fn market_spec_parses_market_equals_tick() {
+    let spec: MarketSpec = "binance:perp:BTCUSDT=0.1".parse().unwrap();
+
+    assert_eq!(spec.market.to_string(), "binance:perp:BTCUSDT");
+    assert_eq!(spec.tick.get(), "0.1".parse::<Decimal>().unwrap());
+    assert!("binance:perp:BTCUSDT".parse::<MarketSpec>().is_err());
+    assert!("binance:perp:BTCUSDT=0".parse::<MarketSpec>().is_err());
 }

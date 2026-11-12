@@ -1,6 +1,10 @@
 use std::fmt;
 use std::str::FromStr;
 
+use rust_decimal::Decimal;
+
+use crate::{PriceGroupingError, TickSize};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Venue {
     Binance,
@@ -127,6 +131,39 @@ impl FromStr for Market {
             return Err(MarketIdError::Malformed);
         };
         Self::new(venue.parse()?, market_type.parse()?, native_name)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarketSpec {
+    pub market: Market,
+    pub tick: TickSize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum MarketSpecError {
+    #[error("market spec must look like `market=tick`")]
+    Malformed,
+    #[error(transparent)]
+    Market(#[from] MarketIdError),
+    #[error("tick `{0}` is not a decimal")]
+    Tick(String),
+    #[error(transparent)]
+    Grouping(#[from] PriceGroupingError),
+}
+
+impl FromStr for MarketSpec {
+    type Err = MarketSpecError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (market, tick) = s.rsplit_once('=').ok_or(MarketSpecError::Malformed)?;
+        let tick: Decimal = tick
+            .parse()
+            .map_err(|_| MarketSpecError::Tick(tick.to_owned()))?;
+        Ok(Self {
+            market: market.parse()?,
+            tick: TickSize::new(tick)?,
+        })
     }
 }
 

@@ -2,7 +2,7 @@ mod common;
 
 use common::{buy, d, sell};
 use orderflow_domain::{
-    Decimal, FootprintBar, FootprintError, PriceGrouping, TickSize, Timeframe, Timestamp,
+    Decimal, FootprintBar, FootprintError, Ohlc, PriceGrouping, TickSize, Timeframe, Timestamp,
     footprint_bars,
 };
 
@@ -153,4 +153,52 @@ fn regrouping_to_a_grouping_that_does_not_nest_is_refused() {
         fine.regroup(grouping("0.5", 2)).unwrap_err(),
         FootprintError::GroupingDoesNotNest
     );
+}
+
+#[test]
+fn a_bar_carries_exact_open_high_low_close_from_its_trades() {
+    let t = MINUTE_START;
+    let trades = vec![
+        buy(t, "100.3", "1"),
+        sell(t + 1_000, "101.7", "1"),
+        buy(t + 2_000, "99.9", "1"),
+        sell(t + 3_000, "100.8", "1"),
+    ];
+
+    let bars = footprint_bars(
+        &trades,
+        Timeframe::from_secs(60).unwrap(),
+        grouping("0.1", 10),
+    );
+
+    assert_eq!(
+        bars[0].ohlc(),
+        Some(Ohlc {
+            open: d("100.3"),
+            high: d("101.7"),
+            low: d("99.9"),
+            close: d("100.8"),
+        })
+    );
+}
+
+#[test]
+fn regrouping_keeps_ohlc_exact() {
+    let t = MINUTE_START;
+    let trades = vec![buy(t, "100.3", "1"), sell(t + 1_000, "101.7", "1")];
+    let bar = &footprint_bars(
+        &trades,
+        Timeframe::from_secs(60).unwrap(),
+        grouping("0.1", 1),
+    )[0];
+
+    let coarse = bar.regroup(grouping("0.1", 10)).unwrap();
+
+    assert_eq!(coarse.ohlc(), bar.ohlc());
+    assert!(bar.ohlc().is_some());
+}
+
+#[test]
+fn an_empty_bar_has_no_ohlc() {
+    assert_eq!(minute_bar(grouping("0.1", 5)).ohlc(), None);
 }
