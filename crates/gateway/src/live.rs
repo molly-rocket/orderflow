@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use async_nats::jetstream::consumer::{DeliverPolicy, pull};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -8,14 +8,17 @@ use axum::response::Response;
 use futures_util::StreamExt;
 use orderflow_bus::decode_record;
 use orderflow_contracts::record::Record;
-use orderflow_domain::{FootprintBar, Gap, TimeRange, Timestamp, Trade};
+use orderflow_domain::{Bubble, Cvd, Decimal, FootprintBar, Gap, Timestamp, Trade};
 use serde::Deserialize;
 use tokio::time::MissedTickBehavior;
 
+use crate::bubbles::{BubbleParams, BubbleSpec, large_window};
 use crate::params::{ApiError, BarParams, BarSpec, MarketParam};
-use crate::{AppState, BarDto, GapDto, LiveMessage, MarketSpec};
+use crate::{AppState, BarDto, BubbleDto, GapDto, LiveMessage, MarketSpec, cvd, now};
 
 const UPDATE_INTERVAL: Duration = Duration::from_millis(100);
+
+const THRESHOLD_REFRESH: Duration = Duration::from_secs(60);
 
 const DELIVERY_LEAD: Duration = Duration::from_secs(5);
 
@@ -31,10 +34,12 @@ pub(crate) async fn upgrade(
     State(state): State<Arc<AppState>>,
     Query(market): Query<MarketParam>,
     Query(bar): Query<BarParams>,
+    Query(bubble): Query<BubbleParams>,
     Query(live): Query<LiveParams>,
 ) -> Result<Response, ApiError> {
     let spec = state.market(&market.market)?.clone();
     let bar = bar.validate(&spec)?;
+    let bubble = bubble.validate()?;
     let now = now();
     let since = live.since_us.map_or(now, Timestamp::from_micros);
     let oldest = Timestamp::from_micros(now.as_micros() - micros(MAX_LOOKBACK));
@@ -44,7 +49,10 @@ pub(crate) async fn upgrade(
         ));
     }
     Ok(ws.on_upgrade(move |socket| async move {
-        if let Err(error) = Session::new(&state, spec, bar, since).run(socket).await {
+        if let Err(error) = Session::new(&state, spec, bar, bubble, since)
+            .run(socket)
+            .await
+        {
             tracing::debug!(%error, "live session ended");
         }
     }))
@@ -54,20 +62,33 @@ struct Session<'a> {
     state: &'a AppState,
     spec: MarketSpec,
     bar_spec: BarSpec,
+    bubble_spec: BubbleSpec,
     first_bar_start: Timestamp,
     current: Option<FootprintBar>,
+    cvd: Cvd,
+    threshold: Option<Decimal>,
     gaps: Vec<(String, Gap)>,
     dirty: bool,
 }
 
 impl<'a> Session<'a> {
-    fn new(state: &'a AppState, spec: MarketSpec, bar_spec: BarSpec, since: Timestamp) -> Self {
+    fn new(
+        state: &'a AppState,
+        spec: MarketSpec,
+        bar_spec: BarSpec,
+        bubble_spec: BubbleSpec,
+        since: Timestamp,
+    ) -> Self {
+        let first_bar_start = bar_spec.timeframe.bar_start(since);
         Self {
             state,
-            first_bar_start: bar_spec.timeframe.bar_start(since),
+            first_bar_start,
             spec,
             bar_spec,
+            bubble_spec,
             current: None,
+            cvd: Cvd::opening(first_bar_start, Decimal::ZERO, true),
+            threshold: None,
             gaps: Vec::new(),
             dirty: false,
         }
@@ -83,9 +104,13 @@ impl<'a> Session<'a> {
             .get_stream(namespace.record_stream())
             .await?;
         let deliver_from = self.first_bar_start.as_micros() - micros(DELIVERY_LEAD);
-        let consumer = stream
+        let mut consumer = stream
             .create_consumer(pull::OrderedConfig {
-                filter_subjects: vec![namespace.trades(market), namespace.gaps(market)],
+                filter_subjects: vec![
+                    namespace.trades(market),
+                    namespace.gaps(market),
+                    namespace.bubbles(market),
+                ],
                 deliver_policy: DeliverPolicy::ByStartTime {
                     start_time: time::OffsetDateTime::from_unix_timestamp_nanos(
                         i128::from(deliver_from) * 1_000,
@@ -94,11 +119,13 @@ impl<'a> Session<'a> {
                 ..Default::default()
             })
             .await?;
+        let mut catching_up = consumer.info().await?.num_pending;
         let mut messages = consumer.messages().await?;
 
-        let window = TimeRange::new(self.first_bar_start, Timestamp::from_micros(i64::MAX))
-            .expect("start is before the end of time");
-        for stored in self.state.store.gaps_with_ids(market, window).await? {
+        let since_day =
+            cvd::since_trading_day(self.first_bar_start, Timestamp::from_micros(i64::MAX))
+                .ok_or_else(|| anyhow::anyhow!("session starts at the end of time"))?;
+        for stored in self.state.store.gaps_with_ids(market, since_day).await? {
             send(
                 &mut socket,
                 &LiveMessage::Gap {
@@ -108,9 +135,15 @@ impl<'a> Session<'a> {
             .await?;
             self.gaps.push((stored.id, stored.gap));
         }
+        let gaps = self.gap_list();
+        self.cvd = cvd::opening(&self.state.store, market, self.first_bar_start, &gaps).await?;
+        self.refresh_threshold().await;
 
         let mut ticker = tokio::time::interval(UPDATE_INTERVAL);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        let mut threshold_ticker = tokio::time::interval(THRESHOLD_REFRESH);
+        threshold_ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        threshold_ticker.tick().await;
         loop {
             tokio::select! {
                 incoming = socket.recv() => match incoming {
@@ -120,19 +153,35 @@ impl<'a> Session<'a> {
                 next = messages.next() => {
                     let Some(message) = next else { return Ok(()) };
                     let message = message?;
+                    catching_up = catching_up.saturating_sub(1);
                     match decode_record(message.headers.as_ref(), &message.payload) {
                         Ok(record) => self.apply(record, &mut socket).await?,
                         Err(error) => tracing::warn!(%error, "undecodable record skipped"),
                     }
                 }
-                _ = ticker.tick(), if self.dirty => {
+                _ = ticker.tick(), if self.dirty && catching_up == 0 => {
                     if let Some(bar) = &self.current {
                         let message = LiveMessage::Bar { bar: self.dto(bar), closed: false };
                         send(&mut socket, &message).await?;
                     }
                     self.dirty = false;
                 }
+                _ = threshold_ticker.tick() => self.refresh_threshold().await,
             }
+        }
+    }
+
+    async fn refresh_threshold(&mut self) {
+        let Some(window) = large_window(now()) else {
+            return;
+        };
+        match self
+            .state
+            .large_threshold(&self.spec.market, window, &self.bubble_spec.rule)
+            .await
+        {
+            Ok(threshold) => self.threshold = threshold,
+            Err(error) => tracing::warn!(%error, "Large Bubble threshold unavailable"),
         }
     }
 
@@ -171,8 +220,30 @@ impl<'a> Session<'a> {
                     self.dirty = true;
                 }
             }
+            Record::Bubbles { bubbles, .. } => {
+                for bubble in &bubbles {
+                    self.add_bubble(bubble, socket).await?;
+                }
+            }
         }
         Ok(())
+    }
+
+    async fn add_bubble(&self, bubble: &Bubble, socket: &mut WebSocket) -> anyhow::Result<()> {
+        if bubble.start < self.first_bar_start || !self.bubble_spec.accepts(bubble) {
+            return Ok(());
+        }
+        let large = self
+            .bubble_spec
+            .rule
+            .is_large(bubble.notional, self.threshold);
+        send(
+            socket,
+            &LiveMessage::Bubble {
+                bubble: BubbleDto::new(bubble, large),
+            },
+        )
+        .await
     }
 
     async fn add_trade(&mut self, trade: &Trade, socket: &mut WebSocket) -> anyhow::Result<()> {
@@ -188,6 +259,8 @@ impl<'a> Session<'a> {
                 closed: true,
             };
             send(socket, &message).await?;
+            let gaps = self.gap_list();
+            self.cvd.advance(bar.range(), bar.delta(), &gaps);
             self.current = None;
         }
         let bar = self.current.get_or_insert_with(|| {
@@ -202,9 +275,15 @@ impl<'a> Session<'a> {
         Ok(())
     }
 
+    fn gap_list(&self) -> Vec<Gap> {
+        self.gaps.iter().map(|(_, g)| *g).collect()
+    }
+
     fn dto(&self, bar: &FootprintBar) -> BarDto {
-        let gaps: Vec<Gap> = self.gaps.iter().map(|(_, g)| *g).collect();
-        BarDto::new(bar, &self.bar_spec.imbalance, &gaps)
+        let gaps = self.gap_list();
+        let mut cvd = self.cvd;
+        let point = cvd.advance(bar.range(), bar.delta(), &gaps);
+        BarDto::new(bar, &self.bar_spec.imbalance, &gaps, point)
     }
 }
 
@@ -212,13 +291,6 @@ async fn send(socket: &mut WebSocket, message: &LiveMessage) -> anyhow::Result<(
     let text = serde_json::to_string(message)?;
     socket.send(Message::Text(text.into())).await?;
     Ok(())
-}
-
-fn now() -> Timestamp {
-    let since_epoch = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    Timestamp::from_micros(i64::try_from(since_epoch.as_micros()).unwrap_or(i64::MAX))
 }
 
 fn micros(duration: Duration) -> i64 {

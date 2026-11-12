@@ -33,7 +33,7 @@ fn us(ms: i64) -> i64 {
 #[tokio::test]
 async fn the_footprint_of_a_real_capture_matches_its_independently_summed_totals() {
     use captures::btc_perp as cap;
-    let stack = Stack::start(Script::new(captures::btc_perp())).await;
+    let stack = Stack::start(Script::new(captures::btc_perp().expect("btc perp capture"))).await;
     let from = us(cap::FIRST_TRADE_MS / MINUTE_MS * MINUTE_MS);
     let to = us(cap::LAST_TRADE_MS + 1);
 
@@ -135,6 +135,49 @@ async fn imbalances_and_stacks_are_flagged_at_the_requested_price_grouping() {
             .iter()
             .all(|r| r["imbalance"].is_null())
     );
+    stack.stop().await;
+}
+
+#[tokio::test]
+async fn footprint_bars_report_open_high_low_close() {
+    let t0 = recent_minute(40);
+    let fixture = AggTrades::new("BTCUSDT")
+        .buy(t0, "100.3", "1")
+        .sell(t0 + 1, "101.7", "1")
+        .buy(t0 + 2, "99.9", "1")
+        .sell(t0 + 3, "100.8", "1")
+        .build();
+    let stack = Stack::start(Script::new(fixture)).await;
+    let (from, to) = (us(t0), us(t0 + MINUTE_MS));
+    stack.wait_for_trades(from, to, 4).await;
+
+    let bar = &stack.footprint(from, to, "&grouping=1").await["bars"][0];
+    assert_eq!(bar["open"], json!("100.3"));
+    assert_eq!(bar["high"], json!("101.7"));
+    assert_eq!(bar["low"], json!("99.9"));
+    assert_eq!(bar["close"], json!("100.8"));
+    stack.stop().await;
+}
+
+#[tokio::test]
+async fn a_live_session_catches_up_before_sending_its_first_bar() {
+    let t0 = recent_minute(1);
+    let mut fixture = AggTrades::new("BTCUSDT");
+    for i in 0..4_000 {
+        fixture = fixture.buy(t0 + i, &format!("100.{}", i % 10), "1");
+    }
+    let stack = Stack::start(Script::new(fixture.build())).await;
+    let (from, to) = (us(t0), us(t0 + MINUTE_MS));
+    stack.wait_for_trades(from, to, 4_000).await;
+
+    let mut live = stack.live(&format!("&grouping=1&since_us={from}")).await;
+    let messages = live
+        .read_until(|seen| seen.iter().any(|m| m["type"] == json!("bar")))
+        .await;
+
+    let first = messages.iter().find(|m| m["type"] == json!("bar")).unwrap();
+    assert_eq!(first["bar"]["trades"], json!(4_000));
+    assert_eq!(first["bar"]["close"], json!("100.9"));
     stack.stop().await;
 }
 

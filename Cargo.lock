@@ -1315,10 +1315,43 @@ checksum = "7e036b411754132fd6b74e94b74e9a13c5cf606fa93d1885c35860d3060820b1"
 [[package]]
 name = "orderflow-aggregator"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-nats",
+ "clap",
+ "futures-util",
+ "orderflow-bus",
+ "orderflow-contracts",
+ "orderflow-domain",
+ "orderflow-runtime",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
 
 [[package]]
 name = "orderflow-book-engine"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-nats",
+ "clap",
+ "futures-util",
+ "orderflow-bus",
+ "orderflow-contracts",
+ "orderflow-domain",
+ "orderflow-runtime",
+ "rustls",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-tungstenite 0.30.0",
+ "tokio-util",
+ "tracing",
+ "ureq",
+ "venue-sim",
+]
 
 [[package]]
 name = "orderflow-bus"
@@ -1384,6 +1417,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "futures-util",
+ "orderflow-aggregator",
+ "orderflow-book-engine",
  "orderflow-bus",
  "orderflow-collector",
  "orderflow-contracts",
@@ -3102,6 +3137,7 @@ dependencies = [
  "rust_decimal",
  "serde",
  "serde_json",
+ "tungstenite 0.30.0",
  "ureq",
 ]
 

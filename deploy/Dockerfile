@@ -17,10 +17,13 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build --release --locked \
         --package orderflow-collector \
+        --package orderflow-aggregator \
+        --package orderflow-book-engine \
         --package orderflow-writer \
         --package orderflow-gateway \
  && mkdir -p /out \
- && cp target/release/orderflow-collector target/release/orderflow-writer \
+ && cp target/release/orderflow-collector target/release/orderflow-aggregator \
+       target/release/orderflow-book-engine target/release/orderflow-writer \
        target/release/orderflow-gateway /out/
 
 FROM debian:bookworm-slim

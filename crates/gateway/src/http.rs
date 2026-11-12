@@ -3,6 +3,7 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::{Query, State};
 
+use crate::cvd;
 use crate::params::{ApiError, BarParams, MarketParam, RangeParams};
 use crate::{AppState, BarDto, FootprintResponse, GapDto, MarketDto};
 
@@ -35,13 +36,16 @@ pub(crate) async fn footprint(
     let spec = state.market(&market.market)?;
     let bar = bar.validate(spec)?;
     let range = range.validate(Some(bar.timeframe))?;
+    let first_bar = bar.timeframe.bar_start(range.start());
+    let since_day = cvd::since_trading_day(first_bar, range.end()).unwrap_or(range);
 
-    let (bars, gaps) = tokio::try_join!(
+    let (bars, day_gaps) = tokio::try_join!(
         state
             .store
             .footprint_bars(&spec.market, range, bar.timeframe, bar.grouping),
-        state.store.gaps(&spec.market, range),
+        state.store.gaps(&spec.market, since_day),
     )?;
+    let mut cvd = cvd::opening(&state.store, &spec.market, first_bar, &day_gaps).await?;
     Ok(Json(FootprintResponse {
         market: spec.market.to_string(),
         timeframe_secs: bar.timeframe.as_secs(),
@@ -49,9 +53,16 @@ pub(crate) async fn footprint(
         imbalance: bar.imbalance.into(),
         bars: bars
             .iter()
-            .map(|b| BarDto::new(b, &bar.imbalance, &gaps))
+            .map(|b| {
+                let point = cvd.advance(b.range(), b.delta(), &day_gaps);
+                BarDto::new(b, &bar.imbalance, &day_gaps, point)
+            })
             .collect(),
-        gaps: gaps.iter().map(GapDto::from).collect(),
+        gaps: day_gaps
+            .iter()
+            .filter(|g| g.overlaps(range))
+            .map(GapDto::from)
+            .collect(),
     }))
 }
 

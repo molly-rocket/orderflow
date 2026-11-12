@@ -15,7 +15,7 @@ A crypto orderflow web app that records Binance and Hyperliquid order flow and s
 
 ```sh
 cargo xtask up          # NATS (JetStream) + ClickHouse, waits until healthy
-cargo xtask live up     # builds the services image, starts collector, writer, gateway
+cargo xtask live up     # builds the services image, starts collector, aggregator, book-engine, writer, gateway
                         #  http://127.0.0.1:8080
 cargo xtask verify-live # compare what was recorded with Binance's own trade history
 ```
@@ -24,11 +24,23 @@ The live services run as containers (compose profile `live`) with `restart: unle
 
 | Command | Does |
 |---|---|
-| `cargo xtask live logs [collector\|writer\|gateway]` | Last 200 log lines, with timestamps |
+| `cargo xtask live logs [collector\|aggregator\|book-engine\|writer\|gateway]` | Last 200 log lines, with timestamps |
 | `cargo xtask live status` | Container state and restarts |
 | `cargo xtask live down` | Stops the services; NATS, ClickHouse and their data stay |
 
 Restarting the services is safe. The collector records the downtime as a Gap from its checkpoint, and the writer resumes exactly where ClickHouse left off.
+
+### Using the chart
+
+- **Price as**: Footprint, Candles, Line or Hidden, switched without a reload. Rows (Price Grouping) default to Auto, about 30 rows per bar.
+- **Layers**: Bubbles, Heatmap, Book (the order book ladder), CVD and Price (the live price line and tag) each toggle on their own.
+- **Order book**: the ladder right of the price axis shows resting bids (green) and asks (red) on the chart's price scale, with the best bid, ask and spread in the top bar. Binance publishes only about ±0.2 % of depth around the price; outside that *known range* the ladder and the Heatmap are hatched, never drawn as empty. The book is live only: when it is resyncing or disconnected the ladder says so and shows no rows.
+- **Heatmap**: resting liquidity over time, from the gateway's last 2 hours of frames (one per second); off by default.
+- **Bubbles** sit at their VWAP, area by notional, colored by Taker side; Large Bubbles have a ring and a USD label. Hover any Bubble, Footprint cell, bar total or CVD point for details.
+- **CVD** resets at 00:00 UTC and turns dashed and labelled once a Gap makes it incomplete for the day.
+- **Settings** (sliders icon): Imbalance ratio and stack length, Large Bubble percentile and USD floor, minimum Bubble notional, Taker side.
+- **Navigate**: drag to pan, wheel to zoom time, Ctrl/⌘ + wheel or drag the price axis to zoom price, double-click to return to live.
+- Everything you choose is in the URL (shareable) and remembered in your browser.
 
 ### Run from source (development)
 
@@ -59,6 +71,8 @@ For web development, run `pnpm --dir web dev` (port 5173). It proxies `/api` to 
 | Route | Returns |
 |---|---|
 | `GET /api/v1/markets` | Served Markets: tick size, Recording Horizon, burst-grouped flag |
-| `GET /api/v1/footprint?market&from_us&to_us[&timeframe_secs=60&grouping=1&imbalance_ratio=3&min_stack=3]` | Footprint bars (rows with Imbalance flags, stacks, delta, total, `incomplete`) and Gaps |
+| `GET /api/v1/footprint?market&from_us&to_us[&timeframe_secs=60&grouping=1&imbalance_ratio=3&min_stack=3]` | Footprint bars (rows with Imbalance flags, stacks, delta, total, exact `open`/`high`/`low`/`close`, `cvd`, `cvd_complete`, `incomplete`) and Gaps |
+| `GET /api/v1/bubbles?market&from_us&to_us[&percentile=99&usd_floor&min_notional&side=both]` | Bubbles (side, VWAP, size, notional, Trades, price range, `large`), the Large Bubble threshold and Gaps. At most 3 days and 20,000 Bubbles per request (the largest, with `truncated`) |
 | `GET /api/v1/gaps?market&from_us&to_us` | Gaps |
-| `WS /api/v1/live?market[&timeframe_secs&grouping&imbalance_ratio&min_stack&since_us]` | `{"type":"bar","bar":…,"closed":bool}` and `{"type":"gap","gap":…}` |
+| `WS /api/v1/book?market[&grouping=1&timeframe_secs=60&heatmap_since_us]` | Live order book: `{"type":"book",…}` with the DOM ladder at the Price Grouping (status `live`/`resyncing`/`disconnected`, best bid and ask, the known range, rows), and with `heatmap_since_us` a `heatmap_history` burst followed by one `heatmap` frame per second. Live only: the gateway keeps the last 2 h of frames in memory |
+| `WS /api/v1/live?market[&timeframe_secs&grouping&imbalance_ratio&min_stack&percentile&usd_floor&min_notional&side&since_us]` | `{"type":"bar",…}`, `{"type":"gap",…}` and `{"type":"bubble","bubble":…}` |

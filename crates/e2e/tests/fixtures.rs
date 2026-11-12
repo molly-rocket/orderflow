@@ -3,7 +3,7 @@ use serde_json::Value;
 
 #[test]
 fn the_binance_perp_capture_is_contiguous_btcusdt_agg_trades() {
-    let fixture = captures::btc_perp();
+    let fixture = captures::btc_perp().expect("btc perp capture");
     let ids: Vec<u64> = fixture
         .frames()
         .iter()

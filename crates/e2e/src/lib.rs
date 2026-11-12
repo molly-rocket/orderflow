@@ -1,3 +1,5 @@
+#![allow(clippy::missing_panics_doc)]
+
 pub use venue_sim::FaultProxy;
 
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -9,13 +11,14 @@ use orderflow_bus::{Bus, StreamSpec};
 use orderflow_collector::checkpoint::{BUCKET_PURPOSE, KvCheckpoints};
 use orderflow_collector::sink::NatsSink;
 use orderflow_contracts::subjects::Namespace;
+use orderflow_domain::BubbleGrouping;
 use orderflow_gateway::MarketSpec;
 use orderflow_store::{Store, StoreConfig};
 use serde_json::Value;
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
-use venue_sim::{FakeVenue, Script};
+use venue_sim::{FakeRest, FakeVenue, Script};
 
 pub use venue_sim::captures;
 
@@ -34,6 +37,41 @@ pub struct Stack {
     http: reqwest::Client,
     shutdown: CancellationToken,
     tasks: Vec<JoinHandle<anyhow::Result<()>>>,
+    aggregator: Option<(CancellationToken, JoinHandle<anyhow::Result<()>>)>,
+    book_engine: Option<BookEngine>,
+}
+
+#[derive(Debug)]
+struct BookEngine {
+    _venue: FakeVenue,
+    _rest: FakeRest,
+    shutdown: CancellationToken,
+    task: JoinHandle<anyhow::Result<()>>,
+}
+
+fn aggregator_config(namespace: &Namespace) -> anyhow::Result<orderflow_aggregator::Config> {
+    Ok(orderflow_aggregator::Config {
+        namespace: namespace.clone(),
+        markets: vec![MARKET.parse()?],
+        grouping: BubbleGrouping::BINANCE_PERP,
+        retry: orderflow_collector::Backoff::new(
+            Duration::from_millis(20),
+            Duration::from_millis(200),
+        ),
+    })
+}
+
+fn spawn_aggregator(
+    namespace: &Namespace,
+    bus: &Bus,
+) -> anyhow::Result<(CancellationToken, JoinHandle<anyhow::Result<()>>)> {
+    let config = aggregator_config(namespace)?;
+    let shutdown = CancellationToken::new();
+    let task = tokio::spawn({
+        let (bus, shutdown) = (bus.clone(), shutdown.clone());
+        async move { orderflow_aggregator::run(&config, &bus, shutdown).await }
+    });
+    Ok((shutdown, task))
 }
 
 impl Stack {
@@ -95,6 +133,8 @@ impl Stack {
             async move { orderflow_writer::run(&writer_config, &bus, &store, shutdown).await }
         }));
 
+        let aggregator = Some(spawn_aggregator(&namespace, &bus)?);
+
         let gateway_config = orderflow_gateway::Config {
             namespace: namespace.clone(),
             markets: vec![format!("{MARKET}={}", captures::btc_perp::TICK).parse::<MarketSpec>()?],
@@ -131,7 +171,96 @@ impl Stack {
             http: reqwest::Client::new(),
             shutdown,
             tasks,
+            aggregator,
+            book_engine: None,
         })
+    }
+
+    pub async fn start_book(&mut self, depth: Script, snapshots: Vec<(u16, String)>) {
+        let venue = FakeVenue::start(depth).await.expect("fake depth venue");
+        let rest = FakeRest::start(snapshots).await.expect("fake REST");
+        let config = orderflow_book_engine::Config {
+            namespace: self.namespace.clone(),
+            markets: vec![
+                format!("{MARKET}={}", captures::btc_perp::TICK)
+                    .parse::<MarketSpec>()
+                    .expect("market spec"),
+            ],
+            ws_url: venue.url(),
+            rest_url: rest.url(),
+            stall_timeout: Duration::from_secs(10),
+            snapshot_timeout: Duration::from_secs(2),
+            retry: orderflow_collector::Backoff::new(
+                Duration::from_millis(20),
+                Duration::from_millis(200),
+            ),
+            max_buffer: 1000,
+        };
+        let shutdown = CancellationToken::new();
+        let task = tokio::spawn({
+            let (bus, shutdown) = (self.bus.clone(), shutdown.clone());
+            async move { orderflow_book_engine::run(&config, &bus, shutdown).await }
+        });
+        self.book_engine = Some(BookEngine {
+            _venue: venue,
+            _rest: rest,
+            shutdown,
+            task,
+        });
+    }
+
+    pub async fn book(&self, query: &str) -> LiveClient {
+        let url = format!(
+            "{}/api/v1/book?market={MARKET}{query}",
+            self.gateway_url.replacen("http", "ws", 1)
+        );
+        let (ws, _) = tokio_tungstenite::connect_async(url)
+            .await
+            .expect("book upgrade");
+        LiveClient { ws }
+    }
+
+    pub async fn restart_aggregator(&mut self) {
+        if let Some((shutdown, task)) = self.aggregator.take() {
+            shutdown.cancel();
+            task.await
+                .expect("aggregator task panicked")
+                .expect("aggregator failed");
+        }
+        self.aggregator =
+            Some(spawn_aggregator(&self.namespace, &self.bus).expect("restart the aggregator"));
+    }
+
+    pub async fn bubbles(&self, from_us: i64, to_us: i64, query: &str) -> Value {
+        let (status, body) = self
+            .get(&format!(
+                "/api/v1/bubbles?market={MARKET}&from_us={from_us}&to_us={to_us}{query}"
+            ))
+            .await;
+        assert_eq!(status, 200, "{body}");
+        body
+    }
+
+    pub async fn wait_for_bubble_trades(&self, from_us: i64, to_us: i64, trades: u64) -> Value {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let body = self.bubbles(from_us, to_us, "").await;
+            let seen: u64 = body["bubbles"]
+                .as_array()
+                .expect("bubbles array")
+                .iter()
+                .map(|b| b["trades"].as_u64().expect("trade count"))
+                .sum();
+            if seen >= trades {
+                assert_eq!(seen, trades, "more Bubble Trades than replayed");
+                return body;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "Bubbles cover {seen} of {trades} Trades"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 
     pub async fn get_response(&self, path_and_query: &str) -> reqwest::Response {
@@ -201,6 +330,20 @@ impl Stack {
 
     pub async fn stop(self) {
         self.shutdown.cancel();
+        if let Some((shutdown, task)) = self.aggregator {
+            shutdown.cancel();
+            task.await
+                .expect("aggregator task panicked")
+                .expect("aggregator failed");
+        }
+        if let Some(engine) = self.book_engine {
+            engine.shutdown.cancel();
+            engine
+                .task
+                .await
+                .expect("book-engine task panicked")
+                .expect("book-engine failed");
+        }
         for task in self.tasks {
             task.await
                 .expect("service task panicked")

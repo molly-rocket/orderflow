@@ -15,6 +15,17 @@ const MIN_STACK: usize = 3;
 const SETTLE_SECS: i64 = 60;
 const MAX_WINDOW_SECS: i64 = 23 * 3600;
 const MINUTE_US: i64 = 60_000_000;
+const DAY_US: i64 = 86_400_000_000;
+const BUBBLE_WINDOW_MS: i64 = 100;
+const BUBBLE_LOOKBACK_MS: i64 = 1_000;
+const VWAP_DECIMALS: u32 = 8;
+const BOOK_TOUCH_TOLERANCE: &str = "0.0005";
+const BOOK_RANGE_TOLERANCE: &str = "0.003";
+const BOOK_TOUCH_LEVELS: usize = 20;
+const BOOK_MIN_PRESENCE: &str = "0.85";
+const BOOK_TOTAL_RATIO: (&str, &str) = ("0.5", "2");
+const BOOK_ATTEMPTS: usize = 3;
+const BOOK_WAIT_SECS: u64 = 15;
 
 #[derive(Debug)]
 pub(crate) struct Options {
@@ -113,6 +124,37 @@ struct MarketDto {
 }
 
 #[derive(Debug, Deserialize)]
+struct BookRowDto {
+    price: String,
+    bid: String,
+    ask: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct BookDto {
+    status: String,
+    best_bid: Option<String>,
+    best_ask: Option<String>,
+    known_low: Option<String>,
+    known_high: Option<String>,
+    rows: Vec<BookRowDto>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum BookMessageDto {
+    Book { book: BookDto },
+    HeatmapHistory {},
+    Heatmap {},
+}
+
+#[derive(Debug, Deserialize)]
+struct DepthDto {
+    bids: Vec<[String; 2]>,
+    asks: Vec<[String; 2]>,
+}
+
+#[derive(Debug, Deserialize)]
 struct GapDto {
     start_us: i64,
     end_us: Option<i64>,
@@ -126,7 +168,29 @@ struct FootprintDto {
 }
 
 #[derive(Debug, Deserialize)]
+struct BubblesDto {
+    bubbles: Vec<ServedBubble>,
+    truncated: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct ServedBubble {
+    start_us: i64,
+    end_us: i64,
+    side: String,
+    vwap: String,
+    size: String,
+    notional: String,
+    trades: u32,
+    low: String,
+    high: String,
+    first_trade_id: u64,
+}
+
+#[derive(Debug, Deserialize)]
 struct BarDto {
+    start_us: i64,
+    cvd: String,
     incomplete: bool,
     buy: String,
     sell: String,
@@ -152,7 +216,7 @@ struct StackDto {
     high: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct AggTrade {
     a: u64,
     p: String,
@@ -372,6 +436,88 @@ fn compare(expected: &Bar, served: &Bar, step: Decimal, mismatches: &mut Vec<Str
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct ExpectedBubble {
+    buy: bool,
+    start_ms: i64,
+    end_ms: i64,
+    first_id: u64,
+    last_id: u64,
+    trades: u32,
+    size: Decimal,
+    notional: Decimal,
+    low: Decimal,
+    high: Decimal,
+}
+
+impl ExpectedBubble {
+    fn starting(trade: &AggTrade) -> Result<Self> {
+        let (price, quantity) = (dec(&trade.p)?, dec(&trade.q)?);
+        Ok(Self {
+            buy: !trade.m,
+            start_ms: trade.time_ms,
+            end_ms: trade.time_ms,
+            first_id: trade.a,
+            last_id: trade.a,
+            trades: 1,
+            size: quantity,
+            notional: price * quantity,
+            low: price,
+            high: price,
+        })
+    }
+
+    fn takes(&self, trade: &AggTrade) -> bool {
+        self.buy != trade.m
+            && trade.a == self.last_id + 1
+            && trade.time_ms - self.start_ms < BUBBLE_WINDOW_MS
+    }
+
+    fn add(&mut self, trade: &AggTrade) -> Result<()> {
+        let (price, quantity) = (dec(&trade.p)?, dec(&trade.q)?);
+        self.end_ms = trade.time_ms;
+        self.last_id = trade.a;
+        self.trades += 1;
+        self.size += quantity;
+        self.notional += price * quantity;
+        self.low = self.low.min(price);
+        self.high = self.high.max(price);
+        Ok(())
+    }
+
+    fn matches(&self, served: &ServedBubble) -> Result<bool> {
+        let vwap = (self.notional / self.size).round_dp(VWAP_DECIMALS);
+        Ok(served.side == if self.buy { "buy" } else { "sell" }
+            && served.start_us == self.start_ms * 1000
+            && served.end_us == self.end_ms * 1000
+            && served.first_trade_id == self.first_id
+            && served.trades == self.trades
+            && dec(&served.size)? == self.size
+            && dec(&served.notional)? == self.notional
+            && dec(&served.vwap)? == vwap
+            && dec(&served.low)? == self.low
+            && dec(&served.high)? == self.high)
+    }
+}
+
+fn expected_bubbles(trades: &[AggTrade]) -> Result<Vec<ExpectedBubble>> {
+    let mut found: Vec<ExpectedBubble> = Vec::new();
+    for trade in trades {
+        match found.last_mut() {
+            Some(open) if open.takes(trade) => open.add(trade)?,
+            _ => found.push(ExpectedBubble::starting(trade)?),
+        }
+    }
+    Ok(found)
+}
+
+fn taker_delta(trades: &[AggTrade]) -> Result<Decimal> {
+    trades.iter().try_fold(Decimal::ZERO, |sum, t| {
+        let quantity = dec(&t.q)?;
+        Ok(if t.m { sum - quantity } else { sum + quantity })
+    })
+}
+
 fn row_index(price: Decimal, step: Decimal) -> Result<i64> {
     i64::try_from((price / step).floor()).context("row index out of range")
 }
@@ -412,6 +558,139 @@ impl Checker<'_> {
         ))
     }
 
+    fn bubbles(&self, market: &str, from_us: i64, to_us: i64) -> Result<BubblesDto> {
+        get_json(&format!(
+            "{}/api/v1/bubbles?market={market}&from_us={from_us}&to_us={to_us}&min_notional=0",
+            self.gateway
+        ))
+    }
+
+    fn verify_bubbles(
+        &self,
+        market: &MarketDto,
+        start: i64,
+        around: &[AggTrade],
+        report: &mut Report,
+    ) -> Result<()> {
+        let end = start + MINUTE_US;
+        let expected: Vec<ExpectedBubble> = expected_bubbles(around)?
+            .into_iter()
+            .filter(|b| b.start_ms * 1000 >= start && b.start_ms * 1000 < end)
+            .collect();
+        let served = self.bubbles(&market.id, start, end)?;
+        let mut mismatches = Vec::new();
+        if served.truncated {
+            mismatches.push("Bubbles truncated".to_owned());
+        }
+        if served.bubbles.len() != expected.len() {
+            mismatches.push(format!(
+                "{} Bubbles served, Binance gives {}",
+                served.bubbles.len(),
+                expected.len()
+            ));
+        }
+        for (want, got) in expected.iter().zip(&served.bubbles) {
+            if !want.matches(got)? {
+                mismatches.push(format!("served {got:?}, Binance {want:?}"));
+            }
+        }
+        let large_trades: u32 = expected.iter().map(|b| b.trades).max().unwrap_or(0);
+        report.record(
+            &format!(
+                "{} {start} bubbles={:4} largest_run={large_trades:3}",
+                market.id,
+                expected.len()
+            ),
+            &mismatches,
+        );
+        Ok(())
+    }
+
+    fn verify_cvd_step(
+        &self,
+        market: &MarketDto,
+        start: i64,
+        minute_trades: &[AggTrade],
+        report: &mut Report,
+    ) -> Result<()> {
+        if start % DAY_US == 0 {
+            return Ok(());
+        }
+        let served = self.footprint(&market.id, start - MINUTE_US, start + MINUTE_US, 50)?;
+        let (Some(previous), Some(current)) = (
+            served.bars.iter().find(|b| b.start_us == start - MINUTE_US),
+            served.bars.iter().find(|b| b.start_us == start),
+        ) else {
+            return Ok(());
+        };
+        let step = dec(&current.cvd)? - dec(&previous.cvd)?;
+        let binance = taker_delta(minute_trades)?;
+        let mismatches = if step == binance {
+            Vec::new()
+        } else {
+            vec![format!("CVD moved {step}, Binance Taker delta {binance}")]
+        };
+        report.record(
+            &format!("{} {start} cvd step={step}", market.id),
+            &mismatches,
+        );
+        Ok(())
+    }
+
+    fn verify_cvd_today(&self, market: &MarketDto, end_us: i64, report: &mut Report) -> Result<()> {
+        let day_start = end_us.div_euclid(DAY_US) * DAY_US;
+        let gaps = self.gaps(&market.id, day_start, end_us)?;
+        let horizon = market.recording_horizon_us.unwrap_or(i64::MAX);
+        if horizon > day_start || !gaps.is_empty() || end_us == day_start {
+            report.skipped += 1;
+            println!(
+                "{} cvd since 00:00 UTC skipped: {}",
+                market.id,
+                if gaps.is_empty() {
+                    "recording began after 00:00 UTC"
+                } else {
+                    "a Gap today"
+                }
+            );
+            return Ok(());
+        }
+        let served = self.footprint(&market.id, end_us - MINUTE_US, end_us, 50)?;
+        let Some(last) = served.bars.last() else {
+            return Ok(());
+        };
+        let klines: Vec<Vec<serde_json::Value>> = get_json(&format!(
+            "{BINANCE_FAPI}/fapi/v1/klines?symbol={}&interval=1m&startTime={}&endTime={}&limit=1500",
+            market.native_name,
+            day_start / 1000,
+            end_us / 1000 - 1
+        ))?;
+        let mut binance = Decimal::ZERO;
+        for kline in &klines {
+            let field = |i: usize| -> Result<Decimal> {
+                dec(kline
+                    .get(i)
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow!("kline field {i}"))?)
+            };
+            binance += field(9)? * Decimal::TWO - field(5)?;
+        }
+        let served_cvd = dec(&last.cvd)?;
+        let mismatches = if served_cvd == binance {
+            Vec::new()
+        } else {
+            vec![format!("CVD {served_cvd}, Binance klines {binance}")]
+        };
+        report.record(
+            &format!(
+                "{} cvd since 00:00 UTC = {served_cvd} ({} minutes)",
+                market.id,
+                klines.len()
+            ),
+            &mismatches,
+        );
+        Ok(())
+    }
+
     fn verify_market(&self, market: &MarketDto, minutes: u32, report: &mut Report) -> Result<()> {
         let tick = dec(&market.tick_size)?;
         let binance_tick = binance_tick_size(&market.native_name)?;
@@ -448,7 +727,16 @@ impl Checker<'_> {
                     market.id, gap.reason
                 );
             } else {
-                let trades = binance_trades(&market.native_name, start / 1000, end / 1000)?;
+                let around = binance_trades(
+                    &market.native_name,
+                    start / 1000 - BUBBLE_LOOKBACK_MS,
+                    end / 1000 + BUBBLE_LOOKBACK_MS,
+                )?;
+                let trades: Vec<AggTrade> = around
+                    .iter()
+                    .filter(|t| t.time_ms * 1000 >= start && t.time_ms * 1000 < end)
+                    .cloned()
+                    .collect();
                 for grouping in GROUPINGS {
                     let step = tick * Decimal::from(grouping);
                     let expected = Bar::from_trades(&trades, step)?;
@@ -480,11 +768,46 @@ impl Checker<'_> {
                         &mismatches,
                     );
                 }
+                self.verify_bubbles(market, start, &around, report)?;
+                self.verify_cvd_step(market, start, &trades, report)?;
             }
             start = end;
         }
 
+        self.verify_cvd_today(market, last_start + MINUTE_US, report)?;
+        self.verify_book(market, report);
         self.verify_completeness(market, last_start + MINUTE_US, report)
+    }
+
+    fn verify_book(&self, market: &MarketDto, report: &mut Report) {
+        let label = format!("{} order book vs Binance depth", market.id);
+        let mut session = match BookSession::open(self.gateway, &market.id) {
+            Ok(session) => session,
+            Err(error) => {
+                report.record(&label, &[format!("order book unavailable: {error:#}")]);
+                return;
+            }
+        };
+        let mut last = Vec::new();
+        for attempt in 1..=BOOK_ATTEMPTS {
+            let outcome = binance_depth(&market.native_name)
+                .map_err(|e| format!("Binance depth unavailable: {e:#}"))
+                .and_then(|depth| {
+                    let book = session
+                        .next_live()
+                        .map_err(|e| format!("order book unavailable: {e:#}"))?;
+                    compare_book(&book, &depth).map_err(|e| format!("{e:#}"))
+                });
+            last = match outcome {
+                Ok(mismatches) if mismatches.is_empty() => {
+                    report.record(&format!("{label} (attempt {attempt})"), &[]);
+                    return;
+                }
+                Ok(mismatches) => mismatches,
+                Err(error) => vec![error],
+            };
+        }
+        report.record(&label, &last);
     }
 
     fn verify_completeness(
@@ -595,6 +918,163 @@ fn binance_tick_size(symbol: &str) -> Result<Decimal> {
         .and_then(|f| f["tickSize"].as_str())
         .ok_or_else(|| anyhow!("{symbol} has no PRICE_FILTER tickSize"))?;
     dec(tick)
+}
+
+struct BookSession {
+    socket: tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>,
+}
+
+impl BookSession {
+    fn open(gateway: &str, market: &str) -> Result<Self> {
+        let url = format!(
+            "{}/api/v1/book?market={}&grouping=1",
+            gateway.replacen("http", "ws", 1),
+            urlencode(market)
+        );
+        let (mut socket, _) =
+            tungstenite::connect(&url).with_context(|| format!("connecting {url}"))?;
+        if let tungstenite::stream::MaybeTlsStream::Plain(stream) = socket.get_mut() {
+            stream.set_read_timeout(Some(std::time::Duration::from_secs(BOOK_WAIT_SECS)))?;
+        }
+        Ok(Self { socket })
+    }
+
+    fn next_live(&mut self) -> Result<BookDto> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(BOOK_WAIT_SECS);
+        let mut last_status = String::from("none");
+        while std::time::Instant::now() < deadline {
+            let message = self.socket.read().context("reading the book socket")?;
+            let tungstenite::Message::Text(text) = message else {
+                continue;
+            };
+            let parsed: BookMessageDto =
+                serde_json::from_str(&text).context("decoding a book message")?;
+            if let BookMessageDto::Book { book } = parsed {
+                if book.status == "live" {
+                    return Ok(book);
+                }
+                last_status = book.status;
+            }
+        }
+        bail!("no live book within {BOOK_WAIT_SECS}s (last status {last_status})")
+    }
+}
+
+fn urlencode(value: &str) -> String {
+    value.replace(':', "%3A")
+}
+
+fn binance_depth(symbol: &str) -> Result<DepthDto> {
+    get_json(&format!(
+        "{BINANCE_FAPI}/fapi/v1/depth?symbol={symbol}&limit=1000"
+    ))
+}
+
+fn within(a: Decimal, b: Decimal, tolerance: Decimal) -> bool {
+    (a - b).abs() <= a.abs().max(b.abs()) * tolerance
+}
+
+fn compare_book(book: &BookDto, depth: &DepthDto) -> Result<Vec<String>> {
+    let touch_tolerance = dec(BOOK_TOUCH_TOLERANCE)?;
+    let range_tolerance = dec(BOOK_RANGE_TOLERANCE)?;
+    let min_presence = dec(BOOK_MIN_PRESENCE)?;
+    let (ratio_low, ratio_high) = (dec(BOOK_TOTAL_RATIO.0)?, dec(BOOK_TOTAL_RATIO.1)?);
+    let mut mismatches = Vec::new();
+    let level =
+        |raw: &[String; 2]| -> Result<(Decimal, Decimal)> { Ok((dec(&raw[0])?, dec(&raw[1])?)) };
+    let (Some(bid), Some(ask)) = (book.best_bid.as_deref(), book.best_ask.as_deref()) else {
+        mismatches.push("live book without a best bid and ask".into());
+        return Ok(mismatches);
+    };
+    let (bid, ask) = (dec(bid)?, dec(ask)?);
+    if bid >= ask {
+        mismatches.push(format!("best bid {bid} is not below best ask {ask}"));
+    }
+    let (Some(top_bid), Some(top_ask)) = (depth.bids.first(), depth.asks.first()) else {
+        mismatches.push("Binance depth is empty".into());
+        return Ok(mismatches);
+    };
+    let (binance_bid, _) = level(top_bid)?;
+    let (binance_ask, _) = level(top_ask)?;
+    if !within(bid, binance_bid, touch_tolerance) {
+        mismatches.push(format!("best bid {bid} vs Binance {binance_bid}"));
+    }
+    if !within(ask, binance_ask, touch_tolerance) {
+        mismatches.push(format!("best ask {ask} vs Binance {binance_ask}"));
+    }
+    let (Some(low), Some(high)) = (book.known_low.as_deref(), book.known_high.as_deref()) else {
+        mismatches.push("live book without a known range".into());
+        return Ok(mismatches);
+    };
+    let (low, high) = (dec(low)?, dec(high)?);
+    let (deepest_bid, _) = level(depth.bids.last().unwrap_or(top_bid))?;
+    let (deepest_ask, _) = level(depth.asks.last().unwrap_or(top_ask))?;
+    if !within(low, deepest_bid, range_tolerance) {
+        mismatches.push(format!(
+            "known low {low} vs Binance deepest bid {deepest_bid}"
+        ));
+    }
+    if !within(high, deepest_ask, range_tolerance) {
+        mismatches.push(format!(
+            "known high {high} vs Binance deepest ask {deepest_ask}"
+        ));
+    }
+    let mut served_bids: BTreeMap<Decimal, Decimal> = BTreeMap::new();
+    let mut served_asks: BTreeMap<Decimal, Decimal> = BTreeMap::new();
+    for row in &book.rows {
+        let price = dec(&row.price)?;
+        let (bid_size, ask_size) = (dec(&row.bid)?, dec(&row.ask)?);
+        if !bid_size.is_zero() {
+            served_bids.insert(price, bid_size);
+        }
+        if !ask_size.is_zero() {
+            served_asks.insert(price, ask_size);
+        }
+    }
+    for (side, served, binance) in [
+        ("bids", &served_bids, &depth.bids),
+        ("asks", &served_asks, &depth.asks),
+    ] {
+        let mut in_range = 0u32;
+        let mut present = 0u32;
+        let mut binance_total = Decimal::ZERO;
+        let mut floor = high;
+        let mut ceiling = low;
+        for (i, raw) in binance.iter().enumerate() {
+            let (price, size) = level(raw)?;
+            if price < low || price > high {
+                continue;
+            }
+            floor = floor.min(price);
+            ceiling = ceiling.max(price);
+            binance_total += size;
+            if i < BOOK_TOUCH_LEVELS {
+                continue;
+            }
+            in_range += 1;
+            if served.contains_key(&price) {
+                present += 1;
+            }
+        }
+        if in_range > 0 {
+            let presence = Decimal::from(present) / Decimal::from(in_range);
+            if presence < min_presence {
+                mismatches.push(format!(
+                    "{side}: {present} of {in_range} Binance levels inside the known range (beyond the top {BOOK_TOUCH_LEVELS}) are in the served book"
+                ));
+            }
+        }
+        let served_total: Decimal = served.range(floor..=ceiling).map(|(_, size)| *size).sum();
+        if !binance_total.is_zero() {
+            let ratio = served_total / binance_total;
+            if ratio < ratio_low || ratio > ratio_high {
+                mismatches.push(format!(
+                    "{side}: served total {served_total} vs Binance {binance_total} over {floor}..{ceiling} (ratio {ratio:.2})"
+                ));
+            }
+        }
+    }
+    Ok(mismatches)
 }
 
 fn get_json<T: DeserializeOwned>(url: &str) -> Result<T> {

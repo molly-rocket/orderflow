@@ -18,7 +18,13 @@ const PACKAGE_ENV: [&str; 6] = [
     "CARGO_PRIMARY_PACKAGE",
 ];
 const LIVE_PROFILE: &str = "live";
-const LIVE_SERVICES: [&str; 3] = ["collector", "writer", "gateway"];
+const LIVE_SERVICES: [&str; 5] = [
+    "collector",
+    "aggregator",
+    "book-engine",
+    "writer",
+    "gateway",
+];
 const LIVE_IMAGE: &str = "orderflow-services:local";
 const GATEWAY_HEALTH: &str = "http://127.0.0.1:8080/healthz";
 const CHAOS_PROFILE: &str = "chaos";

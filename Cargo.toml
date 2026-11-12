@@ -32,6 +32,8 @@ orderflow-runtime = { path = "crates/runtime" }
 orderflow-collector = { path = "crates/collector" }
 orderflow-writer = { path = "crates/writer" }
 orderflow-gateway = { path = "crates/gateway" }
+orderflow-aggregator = { path = "crates/aggregator" }
+orderflow-book-engine = { path = "crates/book-engine" }
 venue-sim = { path = "crates/venue-sim" }
 
 prost = "0.14"

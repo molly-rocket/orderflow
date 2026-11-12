@@ -72,6 +72,22 @@ services:
     depends_on:
       nats: { condition: service_healthy }
 
+  aggregator:
+    <<: *service
+    command: ["orderflow-aggregator"]
+    environment:
+      <<: *service-env
+    depends_on:
+      nats: { condition: service_healthy }
+
+  book-engine:
+    <<: *service
+    command: ["orderflow-book-engine"]
+    environment:
+      <<: *service-env
+    depends_on:
+      nats: { condition: service_healthy }
+
   writer:
     <<: *service
     command: ["orderflow-writer"]

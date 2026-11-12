@@ -9,6 +9,8 @@ description = "End-to-end harness: fake Venue → collector → NATS → writer 
 
 [dependencies]
 anyhow.workspace = true
+orderflow-aggregator.workspace = true
+orderflow-book-engine.workspace = true
 futures-util.workspace = true
 orderflow-bus.workspace = true
 orderflow-collector.workspace = true

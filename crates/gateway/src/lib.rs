@@ -1,48 +1,34 @@
+mod book;
+mod bubbles;
+mod cvd;
 mod dto;
 mod http;
 mod live;
 mod params;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
-use std::str::FromStr;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::Router;
 use axum::routing::get;
 use orderflow_bus::Bus;
 use orderflow_contracts::subjects::Namespace;
-use orderflow_domain::{Market, TickSize};
+pub use orderflow_domain::MarketSpec;
+use orderflow_domain::{Decimal, Market, Timestamp};
 use orderflow_store::Store;
 use tokio::net::TcpListener;
+use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
 pub use dto::{
-    BarDto, ErrorDto, FootprintResponse, GapDto, GroupingDto, ImbalanceDto, ImbalanceFlag,
+    BarDto, BookDto, BookMessage, BubbleDto, BubblesResponse, ErrorDto, FootprintResponse, GapDto,
+    GroupingDto, HeatmapFrameDto, ImbalanceDto, ImbalanceFlag, LadderRowDto, LargeBubbleDto,
     LiveMessage, MarketDto, RowDto, StackDto,
 };
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MarketSpec {
-    pub market: Market,
-    pub tick: TickSize,
-}
-
-impl FromStr for MarketSpec {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> anyhow::Result<Self> {
-        let (market, tick) = s
-            .rsplit_once('=')
-            .ok_or_else(|| anyhow::anyhow!("expected `market=tick`, got `{s}`"))?;
-        Ok(Self {
-            market: market.parse()?,
-            tick: TickSize::new(tick.parse()?)?,
-        })
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -51,15 +37,35 @@ pub struct Config {
     pub web_dir: Option<PathBuf>,
 }
 
+type ThresholdKey = (Market, Decimal, Timestamp, u64);
+
 #[derive(Debug)]
 struct AppState {
     store: Store,
     bus: Bus,
     namespace: Namespace,
     markets: BTreeMap<Market, MarketSpec>,
+    thresholds: Mutex<HashMap<ThresholdKey, Option<Decimal>>>,
+    books: HashMap<Market, book::MarketBooks>,
+    followers: CancellationToken,
+}
+
+impl Drop for AppState {
+    fn drop(&mut self) {
+        self.followers.cancel();
+    }
+}
+
+fn now() -> Timestamp {
+    let since_epoch = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    Timestamp::from_micros(i64::try_from(since_epoch.as_micros()).unwrap_or(i64::MAX))
 }
 
 pub fn router(config: &Config, store: Store, bus: Bus) -> Router {
+    let followers = CancellationToken::new();
+    let books = book::start(&bus, &config.namespace, &config.markets, &followers);
     let state = Arc::new(AppState {
         store,
         bus,
@@ -69,12 +75,17 @@ pub fn router(config: &Config, store: Store, bus: Bus) -> Router {
             .iter()
             .map(|spec| (spec.market.clone(), spec.clone()))
             .collect(),
+        thresholds: Mutex::new(HashMap::new()),
+        books,
+        followers,
     });
     let api = Router::new()
         .route("/api/v1/markets", get(http::markets))
         .route("/api/v1/footprint", get(http::footprint))
         .route("/api/v1/gaps", get(http::gaps))
+        .route("/api/v1/bubbles", get(bubbles::bubbles))
         .route("/api/v1/live", get(live::upgrade))
+        .route("/api/v1/book", get(book::upgrade))
         .route("/healthz", get(|| async { "ok" }))
         .with_state(state);
     let app = match &config.web_dir {
