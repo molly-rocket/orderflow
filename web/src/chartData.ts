@@ -1,43 +1,63 @@
-// One Market's bars and Gaps for the current view, merged from HTTP history
-// pages and live WebSocket updates.
-
-import type { Bar, Gap, LiveMessage } from "./api";
+import type { Bar, Bubble, Gap, LiveMessage } from "./api";
 
 export class ChartData {
-  /** Bars by start time; kept sorted on read. */
   #bars = new Map<number, Bar>();
-  /** Gaps by `start_us/reason`: an open Gap and its later close share a key. */
   #gaps = new Map<string, Gap>();
-  #sorted: Bar[] | null = null;
+  #bubbles = new Map<number, Bubble>();
+  #sortedBars: Bar[] | null = null;
+  #sortedBubbles: Bubble[] | null = null;
+  #direction: boolean | null = null;
 
   clear(): void {
     this.#bars.clear();
     this.#gaps.clear();
-    this.#sorted = null;
+    this.clearBubbles();
+    this.#sortedBars = null;
+    this.#direction = null;
   }
 
-  /** Adds a history page. Bars already held (e.g. updated live) are newer and win. */
+  clearBubbles(): void {
+    this.#bubbles.clear();
+    this.#sortedBubbles = null;
+  }
+
   addHistory(bars: readonly Bar[], gaps: readonly Gap[]): void {
     for (const bar of bars) {
       if (!this.#bars.has(bar.start_us)) this.#bars.set(bar.start_us, bar);
     }
     for (const gap of gaps) this.#putGap(gap);
-    this.#sorted = null;
+    this.#sortedBars = null;
+  }
+
+  addBubbles(bubbles: readonly Bubble[], gaps: readonly Gap[] = []): void {
+    for (const bubble of bubbles) this.#bubbles.set(bubble.first_trade_id, bubble);
+    for (const gap of gaps) this.#putGap(gap);
+    this.#sortedBubbles = null;
   }
 
   applyLive(message: LiveMessage): void {
     if (message.type === "bar") {
+      const newest = this.bars().at(-1);
+      if (!newest || message.bar.start_us >= newest.start_us) this.#observeClose(message.bar.close);
       this.#bars.set(message.bar.start_us, message.bar);
-      this.#sorted = null;
-    } else {
+      this.#sortedBars = null;
+    } else if (message.type === "gap") {
       this.#putGap(message.gap);
+    } else {
+      this.addBubbles([message.bubble]);
     }
   }
 
-  /** Bars ascending by start time. */
   bars(): readonly Bar[] {
-    this.#sorted ??= [...this.#bars.values()].sort((a, b) => a.start_us - b.start_us);
-    return this.#sorted;
+    this.#sortedBars ??= [...this.#bars.values()].sort((a, b) => a.start_us - b.start_us);
+    return this.#sortedBars;
+  }
+
+  bubbles(): readonly Bubble[] {
+    this.#sortedBubbles ??= [...this.#bubbles.values()].sort(
+      (a, b) => a.start_us - b.start_us || a.first_trade_id - b.first_trade_id,
+    );
+    return this.#sortedBubbles;
   }
 
   gaps(): readonly Gap[] {
@@ -52,7 +72,24 @@ export class ChartData {
     return this.bars().at(-1)?.end_us ?? null;
   }
 
-  /** Incomplete per the gateway, or overlapped by a Gap learned since. */
+  lastPrice(): { price: number; up: boolean } | null {
+    const bars = this.bars();
+    const newest = bars.at(-1);
+    if (!newest || newest.close === null) return null;
+    const price = Number(newest.close);
+    if (this.#direction === null) {
+      const previous = bars.at(-2)?.close;
+      this.#direction = previous === null || previous === undefined ? true : price >= Number(previous);
+    }
+    return { price, up: this.#direction };
+  }
+
+  #observeClose(close: string | null): void {
+    if (close === null) return;
+    const current = this.lastPrice();
+    if (current && Number(close) !== current.price) this.#direction = Number(close) > current.price;
+  }
+
   isIncomplete(bar: Bar): boolean {
     return bar.incomplete || [...this.#gaps.values()].some((g) => overlaps(g, bar.start_us, bar.end_us));
   }
@@ -60,12 +97,10 @@ export class ChartData {
   #putGap(gap: Gap): void {
     const key = `${gap.start_us}/${gap.reason}`;
     const known = this.#gaps.get(key);
-    // A closed version is newer than an open one; never reopen.
     if (!known || known.end_us === null) this.#gaps.set(key, gap);
   }
 }
 
-/** Whether `gap` shares any instant with `[start, end)`. */
 export function overlaps(gap: Gap, start: number, end: number): boolean {
   return gap.start_us < end && (gap.end_us === null || gap.end_us > start);
 }

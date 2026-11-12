@@ -1,41 +1,106 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Orderflow</title>
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='2' y='3' width='5' height='10' fill='%23c8323c'/%3E%3Crect x='9' y='1' width='5' height='12' fill='%230f8a5f'/%3E%3C/svg%3E" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='2' y='3' width='5' height='10' rx='1' fill='%23f0536b'/%3E%3Crect x='9' y='1' width='5' height='12' rx='1' fill='%2322c39a'/%3E%3C/svg%3E" />
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
-    <header class="toolbar">
-      <span class="brand">Orderflow</span>
-      <label>Market <select id="market"></select></label>
-      <label>Timeframe <select id="timeframe"></select></label>
-      <label>Price Grouping <select id="grouping"></select></label>
-      <label>Imbalance
-        <select id="ratio">
-          <option value="1.5">150%</option>
-          <option value="2">200%</option>
-          <option value="2.5">250%</option>
-          <option value="3">300%</option>
-          <option value="4">400%</option>
-          <option value="5">500%</option>
-        </select>
+    <header class="topbar">
+      <div class="brand">
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <rect x="2" y="3" width="5" height="10" rx="1" class="brand-sell" />
+          <rect x="9" y="1" width="5" height="12" rx="1" class="brand-buy" />
+        </svg>
+        <span>Orderflow</span>
+      </div>
+      <div class="field market-field">
+        <select id="market" aria-label="Market"></select>
+        <span id="market-meta" class="meta"></span>
+      </div>
+      <div id="timeframes" class="segmented" role="radiogroup" aria-label="Timeframe"></div>
+      <label class="field compact">
+        <span>Rows</span>
+        <select id="grouping" aria-label="Price Grouping"></select>
       </label>
-      <span id="status" class="status" role="status">Connecting…</span>
+      <div class="field compact price-field">
+        <span>Price as</span>
+        <div id="price-style" class="segmented" role="radiogroup" aria-label="Price as"></div>
+      </div>
+      <div class="chips" role="group" aria-label="Layers">
+        <button type="button" class="chip" data-view="bubbles" aria-pressed="true">Bubbles</button>
+        <button type="button" class="chip" data-view="heatmap" aria-pressed="false">Heatmap</button>
+        <button type="button" class="chip" data-view="dom" aria-pressed="true">Book</button>
+        <button type="button" class="chip" data-view="cvd" aria-pressed="true">CVD</button>
+        <button type="button" class="chip" data-view="lastPrice" aria-pressed="true">Price</button>
+      </div>
+      <div class="spacer"></div>
+      <span id="last-price" class="last-price" data-direction="up" hidden></span>
+      <span id="book-header" class="book-pill" hidden></span>
+      <span id="status" class="status" data-state="idle" role="status">Connecting…</span>
+      <button type="button" id="theme-toggle" class="icon-button" aria-label="Switch theme" title="Switch theme">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9Z" /></svg>
+      </button>
+      <button type="button" id="settings-toggle" class="icon-button" aria-label="Settings" aria-expanded="false" aria-controls="settings" title="Settings">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0" /><circle cx="16" cy="6" r="2" /><circle cx="10" cy="12" r="2" /><circle cx="18" cy="18" r="2" /></svg>
+      </button>
     </header>
-    <main class="chart">
-      <canvas id="chart" aria-label="Footprint chart"></canvas>
-      <p id="notice" class="notice" hidden></p>
+
+    <main class="workspace">
+      <section class="chart-area">
+        <canvas id="chart" aria-label="Footprint, Bubbles, order book and CVD chart"></canvas>
+        <div id="tooltip" class="tooltip" role="tooltip" hidden></div>
+        <p id="notice" class="notice" hidden></p>
+        <button type="button" id="follow" class="follow" hidden>Back to live</button>
+      </section>
+
+      <aside id="settings" class="settings" hidden>
+        <h2>Settings</h2>
+        <fieldset>
+          <legend>Footprint</legend>
+          <label>Imbalance ratio <select id="ratio"></select></label>
+          <label>Stacked Imbalance, minimum rows
+            <input id="stack" type="number" min="2" max="20" step="1" inputmode="numeric" />
+          </label>
+        </fieldset>
+        <fieldset>
+          <legend>Bubbles</legend>
+          <label>Large Bubble <select id="percentile"></select></label>
+          <label>Large Bubble USD floor
+            <input id="floor" type="number" min="0" step="1000" placeholder="None" inputmode="decimal" />
+          </label>
+          <label>Minimum notional (USD)
+            <input id="min-notional" type="number" min="0" step="1000" inputmode="decimal" />
+          </label>
+          <div class="field-row">
+            <span>Taker side</span>
+            <div id="side" class="segmented small" role="radiogroup" aria-label="Taker side">
+              <button type="button" data-side="both" role="radio">Both</button>
+              <button type="button" data-side="buy" role="radio">Buy</button>
+              <button type="button" data-side="sell" role="radio">Sell</button>
+            </div>
+          </div>
+        </fieldset>
+        <dl class="help">
+          <dt>Pan</dt><dd>Drag the chart</dd>
+          <dt>Zoom time</dt><dd>Mouse wheel</dd>
+          <dt>Zoom price</dt><dd>Ctrl/⌘ + wheel, or drag the price axis</dd>
+          <dt>Back to live</dt><dd>Double-click</dd>
+        </dl>
+      </aside>
     </main>
-    <footer class="legend">
-      <span><i class="swatch sell"></i>Taker sell</span>
-      <span><i class="swatch buy"></i>Taker buy</span>
-      <span><i class="swatch outline"></i>Imbalance</span>
-      <span><i class="swatch stack"></i>Stacked Imbalance</span>
-      <span><i class="swatch gap"></i>Gap: no data (unknown, not zero)</span>
-      <span class="hint">Drag to pan · wheel: time · Ctrl+wheel: rows · Shift+wheel: bar width · double-click: follow live</span>
+
+    <footer class="statusbar">
+      <span class="legend"><i class="swatch sell"></i>Taker sell</span>
+      <span class="legend"><i class="swatch buy"></i>Taker buy</span>
+      <span class="legend"><i class="swatch outline"></i>Imbalance</span>
+      <span class="legend"><i class="swatch bubble"></i>Large Bubble</span>
+      <span class="legend"><i class="swatch cvd"></i>CVD (resets 00:00 UTC)</span>
+      <span class="legend"><i class="swatch heat"></i>Resting orders (Heatmap, order book)</span>
+      <span class="legend"><i class="swatch gap"></i>Gap or unknown: no data</span>
+      <span id="data-note" class="note"></span>
     </footer>
     <script type="module" src="/src/main.ts"></script>
   </body>
