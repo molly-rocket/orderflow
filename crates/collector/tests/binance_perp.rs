@@ -169,7 +169,7 @@ fn gaps(records: &[Record]) -> Vec<(Timestamp, Option<Timestamp>, GapReason)> {
                 assert!(open.2.is_none(), "gap closed twice");
                 open.2 = Some(*end);
             }
-            Record::Trades { .. } => {}
+            Record::Trades { .. } | Record::Bubbles { .. } => {}
         }
     }
     out.into_iter().map(|(_, s, e, r)| (s, e, r)).collect()

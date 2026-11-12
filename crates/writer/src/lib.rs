@@ -8,7 +8,7 @@ use orderflow_bus::{Bus, StreamSpec, decode_record};
 use orderflow_contracts::record::Record;
 use orderflow_domain::{GapReason, Market, Timestamp};
 use orderflow_runtime::{Backoff, retry};
-use orderflow_store::{GapEvent, Store, TradeBatchRecord, WriteBatch};
+use orderflow_store::{BubbleBatchRecord, GapEvent, Store, TradeBatchRecord, WriteBatch};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
@@ -244,6 +244,13 @@ fn add(
             },
             seq,
         )),
+        Ok(Record::Bubbles {
+            market, bubbles, ..
+        }) => pending.bubble_batches.push(BubbleBatchRecord {
+            market,
+            bubbles,
+            stream_seq: seq,
+        }),
         Err(error) => tracing::error!(seq, %error, "skipping undecodable record"),
     }
 }

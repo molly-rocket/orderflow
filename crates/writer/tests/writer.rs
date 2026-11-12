@@ -94,7 +94,7 @@ impl Harness {
     async fn publish_capture(&self) -> u64 {
         let mut last = 0;
         let subject = format!("{}.trade", self.subject_prefix);
-        for frame in captures::btc_perp().frames() {
+        for frame in captures::btc_perp().expect("btc perp capture").frames() {
             let Ok(Frame::AggTrade { trade, .. }) = parse_frame(&frame.text) else {
                 panic!("fixture frame is not an aggTrade");
             };
@@ -198,6 +198,7 @@ async fn every_recorded_trade_lands_in_clickhouse_exactly_once() {
     );
 
     let trades: Vec<_> = captures::btc_perp()
+        .expect("btc perp capture")
         .frames()
         .iter()
         .map(|f| match parse_frame(&f.text) {
