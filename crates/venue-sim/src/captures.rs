@@ -1,14 +1,13 @@
 use std::path::PathBuf;
 
-use crate::Fixture;
+use crate::{Fixture, FixtureError};
 
 pub fn dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures")
 }
 
-pub fn load(name: &str) -> Fixture {
-    let path = dir().join(name);
-    Fixture::load(&path).unwrap_or_else(|e| panic!("fixture {}: {e}", path.display()))
+pub fn load(name: &str) -> Result<Fixture, FixtureError> {
+    Fixture::load(dir().join(name))
 }
 
 pub mod btc_perp {
@@ -21,6 +20,6 @@ pub mod btc_perp {
     pub const TICK: &str = "0.1";
 }
 
-pub fn btc_perp() -> Fixture {
+pub fn btc_perp() -> Result<Fixture, FixtureError> {
     load(btc_perp::FILE)
 }

@@ -77,3 +77,76 @@ impl AggTrades {
         self
     }
 }
+
+#[derive(Debug, Clone)]
+pub struct DepthDiffs {
+    symbol: String,
+    time_ms: i64,
+    spacing_ms: i64,
+    frames: Vec<Frame>,
+}
+
+impl DepthDiffs {
+    pub fn new(symbol: &str) -> Self {
+        Self {
+            symbol: symbol.to_owned(),
+            time_ms: 1_700_000_000_000,
+            spacing_ms: 300,
+            frames: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn spaced_ms(mut self, spacing_ms: i64) -> Self {
+        self.spacing_ms = spacing_ms;
+        self
+    }
+
+    #[must_use]
+    pub fn diff(
+        mut self,
+        first_id: u64,
+        final_id: u64,
+        prev_final_id: u64,
+        bids: &[(&str, &str)],
+        asks: &[(&str, &str)],
+    ) -> Self {
+        let stream = format!("{}@depth@100ms", self.symbol.to_lowercase());
+        let text = json!({
+            "stream": stream,
+            "data": {
+                "e": "depthUpdate",
+                "E": self.time_ms,
+                "T": self.time_ms - 1,
+                "s": self.symbol,
+                "U": first_id,
+                "u": final_id,
+                "pu": prev_final_id,
+                "b": bids,
+                "a": asks,
+            }
+        })
+        .to_string();
+        self.frames.push(Frame {
+            recv_us: self.time_ms * 1_000,
+            text,
+        });
+        self.time_ms += self.spacing_ms;
+        self
+    }
+
+    pub fn build(self) -> Fixture {
+        Fixture::new(self.frames)
+    }
+}
+
+pub fn depth_snapshot(last_update_id: u64, bids: &[(&str, &str)], asks: &[(&str, &str)]) -> String {
+    json!({
+        "lastUpdateId": last_update_id,
+        "E": 1_700_000_000_000_i64,
+        "T": 1_699_999_999_999_i64,
+        "bids": bids,
+        "asks": asks,
+    })
+    .to_string()
+}
