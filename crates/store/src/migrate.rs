@@ -1,9 +1,13 @@
 use clickhouse::Client;
 
-const MIGRATIONS: &[(u32, &str)] = &[(
-    1,
-    include_str!("../migrations/0001_trades_gaps_footprint.sql"),
-)];
+const MIGRATIONS: &[(u32, &str)] = &[
+    (
+        1,
+        include_str!("../migrations/0001_trades_gaps_footprint.sql"),
+    ),
+    (2, include_str!("../migrations/0002_bubbles.sql")),
+    (3, include_str!("../migrations/0003_ohlc.sql")),
+];
 
 pub(crate) async fn apply(client: &Client) -> clickhouse::error::Result<()> {
     client
@@ -60,7 +64,9 @@ mod tests {
             let parsed = statements(sql);
             assert!(!parsed.is_empty());
             assert!(
-                parsed.iter().all(|s| s.starts_with("CREATE")),
+                parsed
+                    .iter()
+                    .all(|s| s.starts_with("CREATE") || s.starts_with("INSERT")),
                 "{parsed:#?}"
             );
         }

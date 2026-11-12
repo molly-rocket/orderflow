@@ -1,8 +1,11 @@
 use orderflow_domain::{
-    Decimal, Gap, GapReason, Market, PriceGrouping, TakerSide, TickSize, TimeRange, Timeframe,
-    Timestamp, Trade,
+    Bubble, Decimal, Gap, GapReason, LargeBubbleRule, Market, Ohlc, PriceGrouping, TakerSide,
+    TickSize, TimeRange, Timeframe, Timestamp, Trade,
 };
-use orderflow_store::{GapEvent, Store, StoreConfig, StoreError, TradeBatchRecord, WriteBatch};
+use orderflow_store::{
+    BubbleBatchRecord, BubbleQuery, GapEvent, Store, StoreConfig, StoreError, TradeBatchRecord,
+    WriteBatch,
+};
 
 const MIN: i64 = 60_000_000;
 const T0: i64 = 1_794_179_700_000_000; // a minute boundary
@@ -80,6 +83,7 @@ async fn footprint_bars_are_built_from_stored_trades_at_any_nesting_grouping() {
                 ),
             ],
             gap_events: vec![],
+            ..WriteBatch::default()
         })
         .await
         .unwrap();
@@ -162,6 +166,7 @@ async fn gaps_pair_open_and_close_events_and_duplicates_are_harmless() {
         .write(&WriteBatch {
             trade_batches: vec![],
             gap_events: events,
+            ..WriteBatch::default()
         })
         .await
         .unwrap();
@@ -194,6 +199,7 @@ async fn recording_horizon_and_high_water_mark_come_from_stored_trades() {
                 batch(9, vec![trade(2, T0 + 9, "1", "1", TakerSide::Buy)]),
             ],
             gap_events: vec![],
+            ..WriteBatch::default()
         })
         .await
         .unwrap();
@@ -216,7 +222,215 @@ async fn decimals_with_more_than_18_places_are_refused_not_rounded() {
                 vec![trade(1, T0, "0.0000000000000000001", "1", TakerSide::Buy)],
             )],
             gap_events: vec![],
+            ..WriteBatch::default()
         })
         .await;
     assert!(matches!(result, Err(StoreError::Precision(_))));
+}
+
+fn bubble(first_id: u64, start: i64, side: TakerSide, notional: &str) -> Bubble {
+    Bubble {
+        side,
+        start: Timestamp::from_micros(start),
+        end: Timestamp::from_micros(start + 40_000),
+        first_trade_id: first_id,
+        last_trade_id: first_id + 1,
+        trade_count: 2,
+        size: d("1"),
+        notional: d(notional),
+        low: d(notional),
+        high: d(notional),
+    }
+}
+
+fn bubble_batch(seq: u64, bubbles: Vec<Bubble>) -> BubbleBatchRecord {
+    BubbleBatchRecord {
+        market: btc(),
+        bubbles,
+        stream_seq: seq,
+    }
+}
+
+#[tokio::test]
+async fn bubbles_are_filtered_by_notional_and_side_and_rewriting_them_is_harmless() {
+    let store = store("bubbles").await;
+    let stored = vec![
+        bubble(10, T0, TakerSide::Buy, "500"),
+        bubble(12, T0 + 1_000, TakerSide::Sell, "75000.25"),
+        bubble(14, T0 + 2_000, TakerSide::Buy, "120000"),
+        bubble(16, T0 + MIN, TakerSide::Buy, "90000"),
+    ];
+    let batch = WriteBatch {
+        bubble_batches: vec![bubble_batch(1, stored.clone())],
+        ..WriteBatch::default()
+    };
+    store.write(&batch).await.unwrap();
+    store.write(&batch).await.unwrap();
+
+    let all = BubbleQuery::default();
+    let page = store
+        .bubbles(&btc(), range(T0, T0 + MIN), &all)
+        .await
+        .unwrap();
+    assert_eq!(page.bubbles, stored[..3].to_vec());
+    assert!(!page.truncated);
+
+    let big_buys = BubbleQuery {
+        min_notional: d("1000"),
+        side: Some(TakerSide::Buy),
+        ..BubbleQuery::default()
+    };
+    let page = store
+        .bubbles(&btc(), range(T0, T0 + 2 * MIN), &big_buys)
+        .await
+        .unwrap();
+    assert_eq!(page.bubbles, vec![stored[2].clone(), stored[3].clone()]);
+
+    let largest_two = BubbleQuery {
+        limit: 2,
+        ..BubbleQuery::default()
+    };
+    let page = store
+        .bubbles(&btc(), range(T0, T0 + 2 * MIN), &largest_two)
+        .await
+        .unwrap();
+    assert_eq!(page.bubbles, vec![stored[2].clone(), stored[3].clone()]);
+    assert!(page.truncated);
+}
+
+#[tokio::test]
+async fn the_large_bubble_threshold_in_storage_follows_the_domain_rule() {
+    let store = store("largebubble").await;
+    let window = range(T0, T0 + 200 * 1_000);
+    let rule = LargeBubbleRule::default();
+    assert_eq!(
+        store
+            .large_bubble_threshold(&btc(), window, &rule)
+            .await
+            .unwrap(),
+        None
+    );
+
+    let bubbles: Vec<Bubble> = (1..=200_u64)
+        .map(|n| {
+            bubble(
+                n * 2,
+                T0 + i64::try_from(n).unwrap() * 1_000 - 1_000,
+                TakerSide::Buy,
+                &n.to_string(),
+            )
+        })
+        .rev()
+        .collect();
+    store
+        .write(&WriteBatch {
+            bubble_batches: vec![bubble_batch(1, bubbles.clone())],
+            ..WriteBatch::default()
+        })
+        .await
+        .unwrap();
+
+    let mut notionals: Vec<Decimal> = bubbles.iter().map(|b| b.notional).collect();
+    for rule in [
+        LargeBubbleRule::default(),
+        LargeBubbleRule::new(d("90"), None).unwrap(),
+        LargeBubbleRule::new(d("99.5"), None).unwrap(),
+        LargeBubbleRule::new(d("12.3"), None).unwrap(),
+    ] {
+        assert_eq!(
+            store
+                .large_bubble_threshold(&btc(), window, &rule)
+                .await
+                .unwrap(),
+            rule.threshold(&mut notionals),
+            "{rule:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn taker_delta_over_a_span_comes_from_stored_trades() {
+    let store = store("delta").await;
+    store
+        .write(&WriteBatch {
+            trade_batches: vec![batch(
+                1,
+                vec![
+                    trade(1, T0, "100", "2.5", TakerSide::Buy),
+                    trade(2, T0 + 10, "100", "1", TakerSide::Sell),
+                    trade(3, T0 + MIN, "100", "4", TakerSide::Sell),
+                    trade(4, T0 + 2 * MIN, "100", "9", TakerSide::Buy),
+                ],
+            )],
+            ..WriteBatch::default()
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        store
+            .taker_delta(&btc(), range(T0, T0 + 2 * MIN))
+            .await
+            .unwrap(),
+        d("-2.5")
+    );
+    assert_eq!(
+        store
+            .taker_delta(&btc(), range(T0, T0 + MIN))
+            .await
+            .unwrap(),
+        d("1.5")
+    );
+    assert_eq!(
+        store
+            .taker_delta(&btc(), range(T0 - MIN, T0))
+            .await
+            .unwrap(),
+        d("0")
+    );
+}
+
+#[tokio::test]
+async fn footprint_bars_carry_exact_ohlc_across_minutes() {
+    let store = store("ohlc").await;
+    store
+        .write(&WriteBatch {
+            trade_batches: vec![batch(
+                1,
+                vec![
+                    trade(1, T0, "100.0", "1", TakerSide::Buy),
+                    trade(2, T0 + 1_000, "103.5", "1", TakerSide::Sell),
+                    trade(3, T0 + 2_000, "99.0", "1", TakerSide::Buy),
+                    trade(4, T0 + MIN, "101.0", "1", TakerSide::Buy),
+                    trade(5, T0 + MIN + 1_000, "98.5", "1", TakerSide::Sell),
+                    trade(6, T0 + MIN + 2_000, "102.0", "1", TakerSide::Buy),
+                    trade(7, T0 + MIN + 2_000, "102.5", "1", TakerSide::Buy),
+                ],
+            )],
+            gap_events: vec![],
+            ..WriteBatch::default()
+        })
+        .await
+        .unwrap();
+
+    let bars = store
+        .footprint_bars(
+            &btc(),
+            range(T0, T0 + 5 * MIN),
+            Timeframe::from_secs(300).unwrap(),
+            grouping("0.1", 10),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(bars.len(), 1);
+    assert_eq!(
+        bars[0].ohlc(),
+        Some(Ohlc {
+            open: d("100.0"),
+            high: d("103.5"),
+            low: d("98.5"),
+            close: d("102.5"),
+        })
+    );
 }

@@ -1,13 +1,15 @@
+mod bubbles;
 mod decimal;
 mod migrate;
 
 use clickhouse::{Client, Row};
 use orderflow_domain::{
-    FootprintBar, Gap, GapReason, Market, PriceGrouping, RowVolume, TakerSide, TimeRange,
-    Timeframe, Timestamp, Trade,
+    Decimal, FootprintBar, Gap, GapReason, Market, Ohlc, PriceGrouping, RowVolume, TakerSide,
+    TimeRange, Timeframe, Timestamp, Trade,
 };
 use serde::{Deserialize, Serialize};
 
+pub use bubbles::{BubbleBatchRecord, BubblePage, BubbleQuery};
 pub use decimal::PrecisionError;
 
 const MICROS_PER_MINUTE: i64 = 60_000_000;
@@ -84,11 +86,14 @@ pub enum GapEvent {
 pub struct WriteBatch {
     pub trade_batches: Vec<TradeBatchRecord>,
     pub gap_events: Vec<(GapEvent, u64)>,
+    pub bubble_batches: Vec<BubbleBatchRecord>,
 }
 
 impl WriteBatch {
     pub fn is_empty(&self) -> bool {
-        self.trade_batches.is_empty() && self.gap_events.is_empty()
+        self.trade_batches.is_empty()
+            && self.gap_events.is_empty()
+            && self.bubble_batches.is_empty()
     }
 
     pub fn trade_count(&self) -> usize {
@@ -172,7 +177,43 @@ impl Store {
             }
             insert.end().await?;
         }
+        if batch.bubble_batches.iter().any(|b| !b.bubbles.is_empty()) {
+            let markets: Vec<String> = batch
+                .bubble_batches
+                .iter()
+                .map(|b| b.market.to_string())
+                .collect();
+            let mut rows = Vec::new();
+            for (record, market) in batch.bubble_batches.iter().zip(&markets) {
+                for bubble in &record.bubbles {
+                    rows.push(bubbles::BubbleRow::new(market, bubble, record.stream_seq)?);
+                }
+            }
+            let mut insert = self
+                .client
+                .insert::<bubbles::BubbleRow<'_>>("bubbles")
+                .await?;
+            for row in &rows {
+                insert.write(row).await?;
+            }
+            insert.end().await?;
+        }
         Ok(())
+    }
+
+    pub async fn taker_delta(&self, market: &Market, span: TimeRange) -> Result<Decimal> {
+        let delta = self
+            .client
+            .query(
+                "SELECT sum(buy_volume) - sum(sell_volume) FROM footprint_1m \
+                 WHERE market = ? AND bar_start_us >= ? AND bar_start_us < ?",
+            )
+            .bind(market.to_string())
+            .bind(span.start().as_micros())
+            .bind(span.end().as_micros())
+            .fetch_one::<i128>()
+            .await?;
+        decimal::from_clickhouse(delta)
     }
 
     pub async fn high_water_mark(&self) -> Result<u64> {
@@ -274,6 +315,29 @@ impl Store {
                     bar.add_row_volume(row, volume, cell.trades);
                     bars.push(bar);
                 }
+            }
+        }
+        let ohlc = self
+            .client
+            .query(
+                "SELECT intDiv(bar_start_us, ?) * ? AS bar,                         argMinMerge(open) AS open, max(high) AS high,                         min(low) AS low, argMaxMerge(close) AS close                  FROM ohlc_1m                  WHERE market = ? AND bar_start_us >= ? AND bar_start_us < ?                  GROUP BY bar ORDER BY bar",
+            )
+            .bind(timeframe_us)
+            .bind(timeframe_us)
+            .bind(market.to_string())
+            .bind(timeframe.bar_start(range.start()).as_micros())
+            .bind(range.end().as_micros())
+            .fetch_all::<OhlcCell>()
+            .await?;
+        for cell in ohlc {
+            let start = Timestamp::from_micros(cell.bar);
+            if let Some(bar) = bars.iter_mut().find(|b| b.range().start() == start) {
+                bar.set_ohlc(Ohlc {
+                    open: decimal::from_clickhouse(cell.open)?,
+                    high: decimal::from_clickhouse(cell.high)?,
+                    low: decimal::from_clickhouse(cell.low)?,
+                    close: decimal::from_clickhouse(cell.close)?,
+                });
             }
         }
         Ok(bars)
@@ -410,6 +474,15 @@ struct FootprintCell {
     buy: i128,
     sell: i128,
     trades: u64,
+}
+
+#[derive(Row, Deserialize)]
+struct OhlcCell {
+    bar: i64,
+    open: i128,
+    high: i128,
+    low: i128,
+    close: i128,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
