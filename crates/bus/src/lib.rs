@@ -87,7 +87,8 @@ impl Bus {
             duplicate_window: DEDUPE_WINDOW,
             ..Default::default()
         };
-        Ok(self.jetstream.get_or_create_stream(config).await?)
+        self.jetstream.create_or_update_stream(config).await?;
+        Ok(self.jetstream.get_stream(&spec.name).await?)
     }
 
     pub async fn delete_stream(&self, name: &str) -> anyhow::Result<()> {
@@ -141,6 +142,18 @@ impl Bus {
 }
 
 impl Bus {
+    pub async fn publish_core<M>(&self, subject: &str, message: &M) -> anyhow::Result<()>
+    where
+        M: prost::Message + prost::Name,
+    {
+        let mut headers = HeaderMap::new();
+        headers.insert(subjects::TYPE_HEADER, M::full_name().as_str());
+        self.client
+            .publish_with_headers(subject.to_owned(), headers, message.encode_to_vec().into())
+            .await?;
+        Ok(())
+    }
+
     pub async fn publish_record(
         &self,
         namespace: &Namespace,
@@ -154,6 +167,7 @@ impl Bus {
             Record::GapOpened { market, .. } | Record::GapClosed { market, .. } => {
                 namespace.gaps(market)
             }
+            Record::Bubbles { market, .. } => namespace.bubbles(market),
         };
         let encoded = record.encode()?;
         let mut headers = HeaderMap::new();

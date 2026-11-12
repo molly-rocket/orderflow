@@ -110,3 +110,39 @@ async fn ensuring_a_stream_twice_is_idempotent() {
 
     bus.delete_stream(&spec.name).await.unwrap();
 }
+
+#[tokio::test]
+async fn ensuring_a_stream_adds_subjects_to_an_existing_stream() {
+    let bus = Bus::connect(NATS_URL).await.unwrap();
+    let mut spec = spec("grow");
+    let root = spec.subjects[0].trim_end_matches('>').to_owned();
+    spec.subjects = vec![format!("{root}trade.>")];
+    bus.ensure_stream(&spec).await.unwrap();
+    spec.subjects.push(format!("{root}bubble.>"));
+
+    let mut stream = bus.ensure_stream(&spec).await.unwrap();
+
+    assert_eq!(stream.info().await.unwrap().config.subjects, spec.subjects);
+    bus.delete_stream(&spec.name).await.unwrap();
+}
+
+#[tokio::test]
+async fn publish_core_reaches_a_core_subscriber_with_its_type() {
+    use orderflow_contracts::v1::BookState;
+
+    let bus = Bus::connect(NATS_URL).await.unwrap();
+    let subject = format!("core_test_{}.book", spec("core").name);
+    let mut live = bus.client().subscribe(subject.clone()).await.unwrap();
+    let state = BookState {
+        market: "x:y:z".into(),
+        time_us: 7,
+        status: 1,
+        ..Default::default()
+    };
+
+    bus.publish_core(&subject, &state).await.unwrap();
+
+    let message = live.next().await.unwrap();
+    let decoded: BookState = decode(message.headers.as_ref(), &message.payload).unwrap();
+    assert_eq!(decoded, state);
+}

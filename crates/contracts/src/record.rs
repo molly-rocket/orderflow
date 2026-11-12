@@ -1,4 +1,4 @@
-use orderflow_domain::{GapReason, Market, Timestamp, Trade};
+use orderflow_domain::{Bubble, GapReason, Market, Timestamp, Trade};
 use prost::{Message, Name};
 
 use crate::convert::{self, ConvertError};
@@ -20,6 +20,11 @@ pub enum Record {
         gap_id: String,
         market: Market,
         end: Timestamp,
+    },
+    Bubbles {
+        market: Market,
+        bubbles: Vec<Bubble>,
+        resume_from_seq: u64,
     },
 }
 
@@ -44,7 +49,8 @@ impl Record {
         match self {
             Self::Trades { market, .. }
             | Self::GapOpened { market, .. }
-            | Self::GapClosed { market, .. } => market,
+            | Self::GapClosed { market, .. }
+            | Self::Bubbles { market, .. } => market,
         }
     }
 
@@ -55,6 +61,11 @@ impl Record {
                 .map(|t| format!("{market}/t/{}", t.venue_trade_id)),
             Self::GapOpened { gap_id, .. } => Some(format!("{gap_id}/open")),
             Self::GapClosed { gap_id, .. } => Some(format!("{gap_id}/close")),
+            Self::Bubbles {
+                market, bubbles, ..
+            } => bubbles
+                .first()
+                .map(|b| format!("{market}/b/{}", b.first_trade_id)),
         }
     }
 
@@ -83,6 +94,18 @@ impl Record {
                 market: market.to_string(),
                 end_time_us: end.as_micros(),
             }),
+            Self::Bubbles {
+                market,
+                bubbles,
+                resume_from_seq,
+            } => encoded(&v1::BubbleBatch {
+                market: market.to_string(),
+                bubbles: bubbles
+                    .iter()
+                    .map(convert::bubble_to_proto)
+                    .collect::<Result<_, _>>()?,
+                resume_from_seq: *resume_from_seq,
+            }),
         })
     }
 
@@ -106,6 +129,17 @@ impl Record {
                 gap_id: g.gap_id,
                 end: Timestamp::from_micros(g.end_time_us),
             })
+        } else if type_name == v1::BubbleBatch::full_name() {
+            let batch = v1::BubbleBatch::decode(payload)?;
+            Ok(Self::Bubbles {
+                market: batch.market.parse().map_err(ConvertError::from)?,
+                bubbles: batch
+                    .bubbles
+                    .into_iter()
+                    .map(convert::bubble_from_proto)
+                    .collect::<Result<_, _>>()?,
+                resume_from_seq: batch.resume_from_seq,
+            })
         } else {
             Err(RecordError::UnknownType(type_name.to_owned()))
         }
@@ -121,12 +155,27 @@ fn encoded<M: Message + Name>(message: &M) -> Encoded {
 
 #[cfg(test)]
 mod tests {
-    use orderflow_domain::{GapReason, TakerSide, Timestamp, Trade};
+    use orderflow_domain::{Bubble, GapReason, TakerSide, Timestamp, Trade};
 
     use super::*;
 
     fn btc() -> Market {
         "binance:perp:BTCUSDT".parse().unwrap()
+    }
+
+    fn bubble() -> Bubble {
+        Bubble {
+            side: TakerSide::Sell,
+            start: Timestamp::from_millis(10),
+            end: Timestamp::from_millis(60),
+            first_trade_id: 7,
+            last_trade_id: 9,
+            trade_count: 3,
+            size: "1.25".parse().unwrap(),
+            notional: "93104.25".parse().unwrap(),
+            low: "74483.3".parse().unwrap(),
+            high: "74483.5".parse().unwrap(),
+        }
     }
 
     #[test]
@@ -153,6 +202,11 @@ mod tests {
                 gap_id: "g".into(),
                 market: btc(),
                 end: Timestamp::from_micros(9),
+            },
+            Record::Bubbles {
+                market: btc(),
+                bubbles: vec![bubble()],
+                resume_from_seq: 41,
             },
         ];
         for record in records {
@@ -185,5 +239,14 @@ mod tests {
             trades: vec![],
         };
         assert_eq!(empty.dedupe_id(), None);
+        let bubbles = Record::Bubbles {
+            market: btc(),
+            bubbles: vec![bubble()],
+            resume_from_seq: 41,
+        };
+        assert_eq!(
+            bubbles.dedupe_id().as_deref(),
+            Some("binance:perp:BTCUSDT/b/7")
+        );
     }
 }

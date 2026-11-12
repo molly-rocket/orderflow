@@ -1,3 +1,4 @@
+pub mod book;
 pub mod convert;
 pub mod record;
 pub mod subjects;

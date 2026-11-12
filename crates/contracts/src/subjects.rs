@@ -59,6 +59,22 @@ impl Namespace {
         format!("{}.{VERSION}.gap.>", self.prefix)
     }
 
+    pub fn bubbles(&self, market: &Market) -> String {
+        self.market_subject("bubble", market)
+    }
+
+    pub fn all_bubbles(&self) -> String {
+        format!("{}.{VERSION}.bubble.>", self.prefix)
+    }
+
+    pub fn book(&self, market: &Market) -> String {
+        self.market_subject("book", market)
+    }
+
+    pub fn heatmap(&self, market: &Market) -> String {
+        self.market_subject("heatmap", market)
+    }
+
     pub fn record_stream(&self) -> String {
         format!(
             "{}_RECORD_{}",
@@ -68,7 +84,7 @@ impl Namespace {
     }
 
     pub fn record_stream_subjects(&self) -> Vec<String> {
-        vec![self.all_trades(), self.all_gaps()]
+        vec![self.all_trades(), self.all_gaps(), self.all_bubbles()]
     }
 
     pub fn kv_bucket(&self, purpose: &str) -> String {

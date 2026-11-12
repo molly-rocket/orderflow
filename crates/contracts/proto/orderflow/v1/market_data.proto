@@ -76,3 +76,46 @@ message GapClosed {
   string market = 2;
   int64 end_time_us = 3;
 }
+
+message Bubble {
+  TakerSide taker_side = 1;
+  int64 start_time_us = 2;
+  int64 end_time_us = 3;
+  uint64 first_trade_id = 4;
+  uint64 last_trade_id = 5;
+  uint32 trade_count = 6;
+  Decimal size = 7;
+  Decimal notional = 8;
+  Decimal low = 9;
+  Decimal high = 10;
+}
+
+message BubbleBatch {
+  string market = 1;
+  repeated Bubble bubbles = 2;
+  uint64 resume_from_seq = 3;
+}
+
+enum BookStatus {
+  BOOK_STATUS_UNSPECIFIED = 0;
+  BOOK_STATUS_LIVE = 1;
+  BOOK_STATUS_RESYNCING = 2;
+  BOOK_STATUS_DISCONNECTED = 3;
+}
+
+message BookLevel {
+  Decimal price = 1;
+  Decimal size = 2;
+}
+
+message BookState {
+  string market = 1;
+  int64 time_us = 2;
+  BookStatus status = 3;
+  repeated BookLevel bids = 4;
+  repeated BookLevel asks = 5;
+  optional Decimal known_low = 6;
+  optional Decimal known_high = 7;
+  optional BookLevel best_bid = 8;
+  optional BookLevel best_ask = 9;
+}

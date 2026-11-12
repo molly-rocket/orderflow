@@ -1,4 +1,6 @@
-use orderflow_domain::{Decimal, GapReason, Market, MarketIdError, TakerSide, Timestamp, Trade};
+use orderflow_domain::{
+    Bubble, Decimal, GapReason, Market, MarketIdError, TakerSide, Timestamp, Trade,
+};
 
 use crate::v1;
 
@@ -104,4 +106,37 @@ pub fn trade_batch_from_proto(batch: v1::TradeBatch) -> Result<(Market, Vec<Trad
         .map(trade_from_proto)
         .collect::<Result<_, _>>()?;
     Ok((market, trades))
+}
+
+pub fn bubble_to_proto(bubble: &Bubble) -> Result<v1::Bubble, ConvertError> {
+    Ok(v1::Bubble {
+        taker_side: taker_side_to_proto(bubble.side).into(),
+        start_time_us: bubble.start.as_micros(),
+        end_time_us: bubble.end.as_micros(),
+        first_trade_id: bubble.first_trade_id,
+        last_trade_id: bubble.last_trade_id,
+        trade_count: bubble.trade_count,
+        size: Some(decimal_to_proto(bubble.size)?),
+        notional: Some(decimal_to_proto(bubble.notional)?),
+        low: Some(decimal_to_proto(bubble.low)?),
+        high: Some(decimal_to_proto(bubble.high)?),
+    })
+}
+
+pub fn bubble_from_proto(bubble: v1::Bubble) -> Result<Bubble, ConvertError> {
+    let decimal = |value: Option<v1::Decimal>, field| {
+        decimal_from_proto(value.ok_or(ConvertError::MissingField(field))?)
+    };
+    Ok(Bubble {
+        side: taker_side_from_proto(bubble.taker_side())?,
+        start: Timestamp::from_micros(bubble.start_time_us),
+        end: Timestamp::from_micros(bubble.end_time_us),
+        first_trade_id: bubble.first_trade_id,
+        last_trade_id: bubble.last_trade_id,
+        trade_count: bubble.trade_count,
+        size: decimal(bubble.size, "size")?,
+        notional: decimal(bubble.notional, "notional")?,
+        low: decimal(bubble.low, "low")?,
+        high: decimal(bubble.high, "high")?,
+    })
 }
